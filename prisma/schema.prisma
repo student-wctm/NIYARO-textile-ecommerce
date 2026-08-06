@@ -1,0 +1,318 @@
+// =============================================================================
+// Textile Commerce — Prisma Schema
+// Prisma 7 (generator: prisma-client)
+// =============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// In Prisma 7, the datasource URL is configured in prisma.config.ts, not here.
+// The `provider` here sets dialect for query generation only.
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// BRANCH
+// Represents a physical store location.
+// Coordinates stored for future "find nearest branch" feature.
+// isActive lets us soft-disable a branch without deleting data.
+// =============================================================================
+model Branch {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique // used in URLs and cookies, e.g. "delhi-connaught-place"
+  address     String
+  city        String
+  state       String
+  pincode     String
+  phone       String
+  email       String?
+  latitude    Float?   // reserved for future geo-location features
+  longitude   Float?   // reserved for future geo-location features
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  inventory        Inventory[]
+  orders           Order[]
+  transferCharges  BranchTransferCharge[] @relation("SourceBranch")
+  receivingCharges BranchTransferCharge[] @relation("TargetBranch")
+
+  @@index([isActive])
+  @@index([city])
+}
+
+// =============================================================================
+// BRANCH TRANSFER CHARGE
+// Admin-configurable charge for inter-branch transfer/delivery.
+// e.g. Gurgaon → Delhi = ₹50.
+// If no specific route is configured, a global default from settings applies.
+// =============================================================================
+model BranchTransferCharge {
+  id           String  @id @default(cuid())
+  sourceBranch Branch  @relation("SourceBranch", fields: [sourceBranchId], references: [id])
+  sourceBranchId String
+  targetBranch Branch  @relation("TargetBranch", fields: [targetBranchId], references: [id])
+  targetBranchId String
+  chargeAmount Float   // in INR, e.g. 50.00
+  isActive     Boolean @default(true)
+
+  @@unique([sourceBranchId, targetBranchId])
+}
+
+// =============================================================================
+// CATEGORY
+// Product categories. Self-referential for nested categories.
+// e.g. "Fabrics" > "Cotton" > "Printed Cotton"
+// =============================================================================
+model Category {
+  id          String     @id @default(cuid())
+  name        String
+  slug        String     @unique
+  description String?
+  imageUrl    String?    // future: Cloudinary/S3 URL
+  parentId    String?
+  parent      Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryHierarchy")
+  isActive    Boolean    @default(true)
+  sortOrder   Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  products    Product[]
+
+  @@index([parentId])
+  @@index([isActive])
+}
+
+// =============================================================================
+// PRODUCT
+// Central product catalogue. Shared across all branches.
+// Branch-specific pricing overrides handled in Inventory (see note there).
+// =============================================================================
+model Product {
+  id           String    @id @default(cuid())
+  name         String
+  slug         String    @unique
+  description  String?
+  basePrice    Float     // default selling price across all branches
+  comparePrice Float?    // original/MRP for showing discount
+  fabric       String?   // e.g. "Cotton", "Silk", "Polyester"
+  careInstructions String?
+  isActive     Boolean   @default(true)
+  isFeatured   Boolean   @default(false)
+  categoryId   String
+  category     Category  @relation(fields: [categoryId], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  variants  ProductVariant[]
+  images    ProductImage[]
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@index([isFeatured])
+  @@index([slug])
+}
+
+// =============================================================================
+// PRODUCT IMAGE
+// Images are stored as URLs. During development: relative paths in /public.
+// Migration path: swap imageUrl for a Cloudinary/S3 public_id later.
+// =============================================================================
+model ProductImage {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  imageUrl  String  // "/images/products/..." or future cloud URL
+  altText   String?
+  sortOrder Int     @default(0)
+  isPrimary Boolean @default(false)
+
+  @@index([productId])
+}
+
+// =============================================================================
+// PRODUCT VARIANT
+// A specific combination of attributes for a product.
+// e.g. Black Shirt / Size M  or  Red Dupatta / 2.5m
+// SKU must be globally unique for inventory/order tracking.
+// =============================================================================
+model ProductVariant {
+  id          String  @id @default(cuid())
+  productId   String
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sku         String  @unique
+  color       String?
+  size        String?
+  length      String? // for fabric sold by the metre
+  // Additional variant attributes can be added here without breaking schema
+  priceOverride Float? // if set, overrides product.basePrice for this variant
+  isActive    Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  inventory   Inventory[]
+  orderItems  OrderItem[]
+
+  @@index([productId])
+  @@index([sku])
+  @@index([isActive])
+}
+
+// =============================================================================
+// INVENTORY
+// Stock is tracked per ProductVariant per Branch.
+//
+// Three-field stock model to prevent overselling:
+//   physicalStock  = what is physically present in the store
+//   reservedStock  = units held for confirmed/pending orders (not yet collected)
+//   availableStock = physicalStock - reservedStock  (computed, stored for fast reads)
+//
+// When a customer reserves an item:
+//   1. reservedStock += quantity
+//   2. availableStock -= quantity
+//   (physicalStock unchanged until staff marks item as Collected)
+//
+// When staff marks order as Collected:
+//   1. physicalStock -= quantity
+//   2. reservedStock -= quantity
+//   (availableStock stays the same)
+//
+// Branch-specific price override: if branchPrice is set, it takes precedence
+// over ProductVariant.priceOverride and Product.basePrice. This allows future
+// branch-level promotional pricing without a schema redesign.
+// =============================================================================
+model Inventory {
+  id               String   @id @default(cuid())
+  branchId         String
+  branch           Branch   @relation(fields: [branchId], references: [id])
+  variantId        String
+  variant          ProductVariant @relation(fields: [variantId], references: [id])
+  physicalStock    Int      @default(0)
+  reservedStock    Int      @default(0)
+  availableStock   Int      @default(0) // maintained as physicalStock - reservedStock
+  lowStockThreshold Int     @default(5) // alert when availableStock <= this value
+  branchPrice      Float?   // branch-specific price override (future use, not exposed in UI yet)
+  updatedAt        DateTime @updatedAt
+
+  @@unique([branchId, variantId]) // one inventory record per variant per branch
+  @@index([branchId])
+  @@index([variantId])
+  @@index([availableStock])
+}
+
+// =============================================================================
+// CUSTOMER
+// Customers register/login for order history and notifications.
+// selectedBranchId is soft-persisted here for authenticated users;
+// for guests it lives in a cookie.
+// =============================================================================
+model Customer {
+  id               String    @id @default(cuid())
+  name             String
+  email            String    @unique
+  phone            String?   @unique
+  passwordHash     String    // authentication added later
+  selectedBranchId String?   // last chosen branch — synced from cookie on login
+  city             String?
+  state            String?
+  isActive         Boolean   @default(true)
+  emailVerified    Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  orders           Order[]
+
+  @@index([email])
+  @@index([phone])
+}
+
+// =============================================================================
+// ORDER
+// An order is always associated with exactly one branch (pickup branch).
+// fulfilmentBranchId may differ from branchId when stock comes from a
+// nearby branch (inter-branch transfer scenario).
+// =============================================================================
+model Order {
+  id                 String      @id @default(cuid())
+  orderNumber        String      @unique // human-readable, e.g. "TXL-2026-00001"
+  customerId         String?
+  customer           Customer?   @relation(fields: [customerId], references: [id])
+  customerName       String      // captured at checkout for guest orders too
+  customerPhone      String
+  customerEmail      String?
+  branchId           String      // pickup branch
+  branch             Branch      @relation(fields: [branchId], references: [id])
+  fulfilmentBranchId String?     // branch supplying the stock (may differ for transfers)
+  transferCharge     Float       @default(0) // ₹0 for same-branch, configured amount otherwise
+  subtotal           Float
+  total              Float
+  status             OrderStatus @default(PENDING)
+  notes              String?     // customer notes
+  staffNotes         String?     // internal notes by branch staff
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  items              OrderItem[]
+  statusHistory      OrderStatusHistory[]
+
+  @@index([customerId])
+  @@index([branchId])
+  @@index([status])
+  @@index([orderNumber])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// ORDER STATUS
+// Full lifecycle from reservation to collection.
+// Designed to support notifications at each transition.
+// =============================================================================
+enum OrderStatus {
+  PENDING          // customer placed order, awaiting branch confirmation
+  CONFIRMED        // branch confirmed the order
+  PACKING          // staff is preparing the order
+  READY_FOR_PICKUP // order is packed, customer notified
+  COLLECTED        // customer picked up — final state
+  CANCELLED        // cancelled by customer or staff
+}
+
+// =============================================================================
+// ORDER ITEM
+// Line items for an order. Price is snapshotted at order time so that
+// future price changes do not affect historical orders.
+// =============================================================================
+model OrderItem {
+  id        String         @id @default(cuid())
+  orderId   String
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  quantity  Int
+  unitPrice Float          // snapshotted at order time
+  totalPrice Float         // quantity * unitPrice
+
+  @@index([orderId])
+  @@index([variantId])
+}
+
+// =============================================================================
+// ORDER STATUS HISTORY
+// Full audit trail of every status change with actor and timestamp.
+// changedBy: "CUSTOMER" | "STAFF" | "SYSTEM"
+// =============================================================================
+model OrderStatusHistory {
+  id        String      @id @default(cuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    OrderStatus
+  changedBy String      // "CUSTOMER", "STAFF:<staffId>", or "SYSTEM"
+  note      String?
+  createdAt DateTime    @default(now())
+
+  @@index([orderId])
+}
