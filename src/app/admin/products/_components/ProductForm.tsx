@@ -8,11 +8,12 @@ import type { ActionResult } from "@/app/admin/products/actions"
 
 interface ProductFormProps {
   product?: Product
-  // CategoryOption contains only id/name/slug — plain strings, safe to pass
-  // across the Server→Client boundary without Date serialisation issues.
   categories: CategoryOption[]
   action: (prev: ActionResult, data: FormData) => Promise<ActionResult>
   showSuccessBanner?: boolean
+  // Called with the full state after a successful submission.
+  // Used by NewProductClient to detect creation and render ImageManager.
+  onSuccess?: (state: ActionResult) => void
 }
 
 const initialState: ActionResult = { success: false }
@@ -47,7 +48,7 @@ function Field({
   )
 }
 
-export function ProductForm({ product, categories, action, showSuccessBanner }: ProductFormProps) {
+export function ProductForm({ product, categories, action, showSuccessBanner, onSuccess }: ProductFormProps) {
   const [state, formAction, isPending] = useActionState(action, initialState)
   const formRef = useRef<HTMLFormElement>(null)
   const fe = state.fieldErrors ?? {}
@@ -57,7 +58,10 @@ export function ProductForm({ product, categories, action, showSuccessBanner }: 
     if (state.fieldErrors || state.error) {
       formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
     }
-  }, [state])
+    if (state.success && onSuccess) {
+      onSuccess(state)
+    }
+  }, [state]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <form ref={formRef} action={formAction} noValidate
