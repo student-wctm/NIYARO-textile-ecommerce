@@ -134,6 +134,43 @@ export async function createProduct(
   redirect(`/admin/products/${productId}/edit`)
 }
 
+/**
+ * Same as createProduct but returns the new productId instead of redirecting.
+ * Used by the New Product page so it can render ImageManager + VariantManager
+ * inline without a full page navigation.
+ */
+export async function createProductAndReturn(
+  _prev: ActionResult & { productId?: string },
+  formData: FormData
+): Promise<ActionResult & { productId?: string }> {
+  const { values, fieldErrors } = validateProductFields(formData)
+  if (Object.keys(fieldErrors).length > 0) return { success: false, fieldErrors }
+
+  try {
+    const slug = await generateUniqueProductSlug(values.name)
+    const product = await prisma.product.create({
+      data: {
+        name: values.name,
+        slug,
+        description: values.description,
+        categoryId: values.categoryId,
+        basePrice: values.basePrice,
+        comparePrice: values.comparePrice,
+        fabric: values.fabric,
+        careInstructions: values.careInstructions,
+        isActive: values.isActive,
+        isFeatured: values.isFeatured,
+      },
+    })
+    revalidatePath("/admin/products")
+    revalidatePath("/products", "layout")
+    return { success: true, productId: product.id }
+  } catch (err) {
+    console.error("[createProductAndReturn]", err)
+    return { success: false, error: "Failed to create product. Please try again." }
+  }
+}
+
 // ─── Update product ───────────────────────────────────────────────────────────
 
 export async function updateProduct(
