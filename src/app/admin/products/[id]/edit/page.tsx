@@ -5,7 +5,7 @@
 import type { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { getProductById, getActiveCategories } from "@/lib/products"
+import { getProductById, getActiveCategoryOptions } from "@/lib/products"
 import { updateProduct } from "@/app/admin/products/actions"
 import { ProductForm } from "@/app/admin/products/_components/ProductForm"
 import { VariantManager } from "@/app/admin/products/_components/VariantManager"
@@ -24,7 +24,7 @@ export default async function EditProductPage({ params }: PageProps) {
 
   const [product, categories] = await Promise.all([
     getProductById(id),
-    getActiveCategories(),
+    getActiveCategoryOptions(),
   ])
 
   if (!product) notFound()

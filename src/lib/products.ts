@@ -43,6 +43,26 @@ export async function getActiveCategories(): Promise<Category[]> {
   })
 }
 
+/**
+ * Returns only id, name, slug — plain strings, fully JSON-serialisable.
+ * Use this when passing categories across a Server → Client Component boundary
+ * (e.g. into ProductForm). The full Category type contains Date fields which
+ * cannot be serialised by Next.js App Router's prop passing mechanism.
+ */
+export type CategoryOption = {
+  id: string
+  name: string
+  slug: string
+}
+
+export async function getActiveCategoryOptions(): Promise<CategoryOption[]> {
+  return prisma.category.findMany({
+    where: { isActive: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    select: { id: true, name: true, slug: true },
+  })
+}
+
 export async function getCategoryById(id: string): Promise<Category | null> {
   return prisma.category.findUnique({ where: { id } })
 }

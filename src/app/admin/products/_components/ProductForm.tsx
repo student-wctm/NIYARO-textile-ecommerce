@@ -2,14 +2,16 @@
 
 import { useActionState, useEffect, useRef } from "react"
 import Link from "next/link"
-import type { Category, Product } from "@/lib/products"
+import type { Product } from "@/lib/products"
+import type { CategoryOption } from "@/lib/products"
 import type { ActionResult } from "@/app/admin/products/actions"
 
 interface ProductFormProps {
   product?: Product
-  categories: Category[]
+  // CategoryOption contains only id/name/slug — plain strings, safe to pass
+  // across the Server→Client boundary without Date serialisation issues.
+  categories: CategoryOption[]
   action: (prev: ActionResult, data: FormData) => Promise<ActionResult>
-  // When editing, show a success flash on the page instead of redirecting
   showSuccessBanner?: boolean
 }
 

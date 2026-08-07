@@ -21,7 +21,7 @@
 
 import { useActionState } from "react"
 import Link from "next/link"
-import type { Category, ProductVariant, ProductImage } from "@/lib/products"
+import type { CategoryOption, ProductVariant, ProductImage } from "@/lib/products"
 import type { ActionResult } from "@/app/admin/products/actions"
 import { createProductAndReturn } from "@/app/admin/products/actions"
 import { ProductForm } from "@/app/admin/products/_components/ProductForm"
@@ -29,7 +29,7 @@ import { ImageManager } from "@/app/admin/products/_components/ImageManager"
 import { VariantManager } from "@/app/admin/products/_components/VariantManager"
 
 interface NewProductClientProps {
-  categories: Category[]
+  categories: CategoryOption[]
 }
 
 type CreateState = ActionResult & { productId?: string }

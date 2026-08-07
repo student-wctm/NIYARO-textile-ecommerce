@@ -1,13 +1,13 @@
 // SECURITY TODO: No authentication yet. Protect before production.
 import type { Metadata } from "next"
 import Link from "next/link"
-import { getActiveCategories } from "@/lib/products"
+import { getActiveCategoryOptions } from "@/lib/products"
 import { NewProductClient } from "@/app/admin/products/_components/NewProductClient"
 
 export const metadata: Metadata = { title: "Add Product" }
 
 export default async function NewProductPage() {
-  const categories = await getActiveCategories()
+  const categories = await getActiveCategoryOptions()
 
   return (
     <div className="max-w-2xl">
