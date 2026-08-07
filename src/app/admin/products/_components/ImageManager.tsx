@@ -3,21 +3,18 @@
 // =============================================================================
 // ImageManager — Admin product image management
 //
-// Upload flow:
-//   1. Admin picks one or more files via the file input (or drag-and-drop).
-//   2. Each file is validated client-side (type, size) for fast feedback.
-//   3. Files are uploaded one-by-one to POST /api/upload/product-image.
-//   4. On success the returned URL is persisted via saveProductImage() Server Action.
-//   5. revalidatePath() in the Server Action refreshes the image list.
+// Features:
+//   - Up to 20 images per product
+//   - Multi-file select + drag-and-drop upload zone
+//   - Client-side compression via Canvas API before upload (no library needed)
+//   - Per-file upload progress bars, parallel uploads
+//   - Drag-to-reorder with visual ghost placeholder
+//   - Set any image as primary (Main)
+//   - Delete with confirmation
+//   - sortOrder saved to DB on drop
 //
-// Reorder flow:
-//   Admin drags image cards. On drop, reorderImages() Server Action is called
-//   with the new sorted ID array.
-//
-// Storage:
-//   Binary files → Vercel Blob (via Route Handler)
-//   URL metadata → PostgreSQL ProductImage table (via Server Action)
-//   No binary data in the DB at any point.
+// Storage: Vercel Blob via /api/upload/product-image Route Handler
+// DB:      ProductImage table via Server Actions (no binary in Postgres)
 // =============================================================================
 
 import {
@@ -38,49 +35,86 @@ import {
 import { getProductImageUrl } from "@/lib/image"
 import type { ProductImage } from "@/lib/products"
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const ALLOWED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"]
+const MAX_FILE_BYTES  = 20 * 1024 * 1024  // 20 MB raw — will be compressed
+const MAX_IMAGES      = 20
+const COMPRESS_MAX_PX = 1600              // longest edge after compression
+const COMPRESS_QUALITY = 0.82            // JPEG quality (0–1)
+const ACCEPT = ".jpg,.jpeg,.png,.webp"
+
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+interface UploadItem {
+  id: string
+  file: File
+  previewUrl: string
+  status: "queued" | "compressing" | "uploading" | "done" | "error"
+  progress: number    // 0–100
+  error?: string
+}
 
 interface ImageManagerProps {
   productId: string
   images: ProductImage[]
 }
 
-interface UploadingFile {
-  id: string            // local id for React key
-  file: File
-  previewUrl: string    // object URL for instant preview
-  status: "pending" | "uploading" | "done" | "error"
-  error?: string
-  progress: number      // 0-100
+// ─── Compression ──────────────────────────────────────────────────────────────
+
+/**
+ * Compresses an image using the Canvas API.
+ * Resizes to max COMPRESS_MAX_PX on the longest edge, encodes as JPEG.
+ * Returns a new File object with the same name.
+ */
+async function compressImage(file: File): Promise<File> {
+  // Skip SVG or tiny files
+  if (file.type === "image/svg+xml" || file.size < 50 * 1024) return file
+
+  return new Promise((resolve) => {
+    const img = new window.Image()
+    const url = URL.createObjectURL(file)
+
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      let { width, height } = img
+
+      if (width > COMPRESS_MAX_PX || height > COMPRESS_MAX_PX) {
+        const ratio = Math.min(COMPRESS_MAX_PX / width, COMPRESS_MAX_PX / height)
+        width  = Math.round(width  * ratio)
+        height = Math.round(height * ratio)
+      }
+
+      const canvas = document.createElement("canvas")
+      canvas.width  = width
+      canvas.height = height
+      const ctx = canvas.getContext("2d")!
+      ctx.drawImage(img, 0, 0, width, height)
+
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) { resolve(file); return }
+          resolve(new File([blob], file.name.replace(/\.\w+$/, ".jpg"), {
+            type: "image/jpeg",
+            lastModified: Date.now(),
+          }))
+        },
+        "image/jpeg",
+        COMPRESS_QUALITY
+      )
+    }
+
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file) }
+    img.src = url
+  })
 }
 
-const ALLOWED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"]
-const MAX_BYTES = 8 * 1024 * 1024 // 8 MB
-const ACCEPT = ".jpg,.jpeg,.png,.webp"
+// ─── ImageCard ────────────────────────────────────────────────────────────────
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function formatBytes(bytes: number): string {
-  return bytes < 1024 * 1024
-    ? `${(bytes / 1024).toFixed(0)} KB`
-    : `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-function validateFile(file: File): string | null {
-  if (!ALLOWED_TYPES.includes(file.type.toLowerCase())) {
-    return `"${file.name}" — unsupported type. Use JPG, PNG, or WebP.`
-  }
-  if (file.size > MAX_BYTES) {
-    return `"${file.name}" — ${formatBytes(file.size)} exceeds the 8 MB limit.`
-  }
-  return null
-}
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-/** A single uploaded image card with set-primary, delete, and drag handle. */
 function ImageCard({
   image,
+  index,
+  total,
   productId,
   isDragging,
   isDragOver,
@@ -89,6 +123,8 @@ function ImageCard({
   onDragEnd,
 }: {
   image: ProductImage
+  index: number
+  total: number
   productId: string
   isDragging: boolean
   isDragOver: boolean
@@ -106,9 +142,10 @@ function ImageCard({
       onDragEnd={onDragEnd}
       onDragOver={(e) => e.preventDefault()}
       className={[
-        "relative group rounded-xl border-2 overflow-hidden bg-slate-100 cursor-grab active:cursor-grabbing transition-all select-none",
-        isDragOver ? "border-[var(--color-brand-500)] scale-105 shadow-lg" : "border-transparent",
-        isDragging ? "opacity-40" : "opacity-100",
+        "relative group rounded-xl border-2 overflow-hidden bg-slate-100",
+        "cursor-grab active:cursor-grabbing select-none transition-all duration-150",
+        isDragOver ? "border-[var(--color-brand-500)] scale-105 shadow-xl ring-2 ring-[var(--color-brand-300)]" : "border-transparent",
+        isDragging ? "opacity-30 scale-95" : "",
         isPending ? "opacity-60 pointer-events-none" : "",
       ].join(" ")}
     >
@@ -119,43 +156,52 @@ function ImageCard({
           alt={image.altText ?? "Product image"}
           fill
           className="object-cover"
-          sizes="(max-width: 640px) 40vw, 160px"
+          sizes="160px"
+          loading="lazy"
           onError={(e) => {
-            // Swap broken image for placeholder gracefully
-            ;(e.target as HTMLImageElement).src = "/images/placeholders/product.svg"
+            (e.target as HTMLImageElement).src = "/images/placeholders/product.svg"
           }}
         />
       </div>
 
+      {/* Position badge */}
+      <div className="absolute top-1.5 left-1.5 rounded-md bg-black/50 px-1.5 py-0.5 text-xs font-mono text-white">
+        {index + 1}/{total}
+      </div>
+
       {/* Primary badge */}
       {image.isPrimary && (
-        <div className="absolute top-1.5 left-1.5 rounded-full bg-[var(--color-brand-600)] px-2 py-0.5 text-xs font-semibold text-white shadow">
-          Main
+        <div className="absolute bottom-8 left-0 right-0 flex justify-center">
+          <span className="rounded-full bg-[var(--color-brand-600)] px-2 py-0.5 text-xs font-semibold text-white shadow">
+            MAIN
+          </span>
         </div>
       )}
 
-      {/* Drag handle hint */}
-      <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/50 rounded-md p-1" aria-hidden="true">
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6h16.5M3.75 12h16.5M3.75 18h16.5" />
+      {/* Drag handle */}
+      <div
+        className="absolute top-1.5 right-1.5 bg-black/50 rounded-md p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+        aria-hidden="true"
+      >
+        <svg className="h-3.5 w-3.5 text-white" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5h16.5M3.75 12h16.5M3.75 19h16.5" />
         </svg>
       </div>
 
-      {/* Hover action strip */}
-      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-1 bg-black/60 px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        {!image.isPrimary && (
+      {/* Action bar on hover */}
+      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/70 px-2 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity gap-1">
+        {!image.isPrimary ? (
           <button
             type="button"
             disabled={isPending}
             onClick={() => startTransition(async () => { await setPrimaryImage(image.id, productId) })}
-            className="flex-1 rounded text-xs font-medium text-white hover:text-yellow-300 transition-colors text-left truncate disabled:opacity-50"
             title="Set as main image"
+            className="flex-1 rounded text-xs text-white hover:text-yellow-300 transition-colors text-left truncate disabled:opacity-50"
           >
             Set Main
           </button>
-        )}
-        {image.isPrimary && (
-          <span className="flex-1 text-xs text-yellow-300 font-medium truncate">Main image</span>
+        ) : (
+          <span className="flex-1 text-xs text-yellow-300 font-medium truncate">Main</span>
         )}
         <button
           type="button"
@@ -167,13 +213,13 @@ function ImageCard({
           aria-label="Delete image"
           className="shrink-0 rounded p-0.5 text-white/70 hover:text-red-400 transition-colors disabled:opacity-50"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
       </div>
 
-      {/* Loading overlay */}
+      {/* Pending overlay */}
       {isPending && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/60">
           <svg className="h-5 w-5 animate-spin text-[var(--color-brand-600)]" viewBox="0 0 24 24" fill="none">
@@ -186,8 +232,15 @@ function ImageCard({
   )
 }
 
-/** A single in-progress upload tile showing preview + progress bar. */
-function UploadTile({ item }: { item: UploadingFile }) {
+// ─── UploadTile ───────────────────────────────────────────────────────────────
+
+function UploadTile({ item }: { item: UploadItem }) {
+  const label =
+    item.status === "compressing" ? "Compressing…" :
+    item.status === "uploading"   ? `${item.progress}%` :
+    item.status === "done"        ? "Done" :
+    item.status === "error"       ? "Error" : "Queued"
+
   return (
     <div className="relative rounded-xl border-2 border-slate-200 overflow-hidden bg-slate-50">
       <div className="relative aspect-square">
@@ -195,44 +248,46 @@ function UploadTile({ item }: { item: UploadingFile }) {
           src={item.previewUrl}
           alt={item.file.name}
           fill
-          className="object-cover opacity-70"
+          className="object-cover opacity-60"
           sizes="160px"
-          unoptimized // local object URL — skip next/image optimisation
+          unoptimized
         />
       </div>
 
-      {/* Status overlay */}
-      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/30 px-2">
-        {item.status === "uploading" && (
-          <>
-            <svg className="h-5 w-5 animate-spin text-white mb-1.5" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            <div className="w-full bg-white/30 rounded-full h-1.5">
-              <div
-                className="bg-white rounded-full h-1.5 transition-all duration-300"
-                style={{ width: `${item.progress}%` }}
-              />
-            </div>
-          </>
+      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 px-2 gap-2">
+        {(item.status === "compressing" || item.status === "uploading" || item.status === "queued") && (
+          <svg className="h-5 w-5 animate-spin text-white" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
         )}
         {item.status === "done" && (
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <svg className="h-6 w-6 text-green-400" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
         )}
         {item.status === "error" && (
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <svg className="h-6 w-6 text-red-400" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
           </svg>
         )}
+
+        {/* Progress bar */}
+        {item.status === "uploading" && (
+          <div className="w-full bg-white/30 rounded-full h-1.5">
+            <div
+              className="bg-white rounded-full h-1.5 transition-all duration-200"
+              style={{ width: `${item.progress}%` }}
+            />
+          </div>
+        )}
+
+        <span className="text-xs font-medium text-white">{label}</span>
       </div>
 
-      {/* Error tooltip */}
       {item.status === "error" && item.error && (
-        <div className="absolute inset-x-0 bottom-0 bg-red-600 px-2 py-1">
-          <p className="text-xs text-white leading-tight truncate" title={item.error}>{item.error}</p>
+        <div className="absolute inset-x-0 bottom-0 bg-red-600/90 px-2 py-1">
+          <p className="text-xs text-white truncate" title={item.error}>{item.error}</p>
         </div>
       )}
     </div>
@@ -243,192 +298,174 @@ function UploadTile({ item }: { item: UploadingFile }) {
 
 export function ImageManager({ productId, images: initialImages }: ImageManagerProps) {
   const [images, setImages] = useState<ProductImage[]>(initialImages)
-  const [uploading, setUploading] = useState<UploadingFile[]>([])
+  const [uploads, setUploads] = useState<UploadItem[]>([])
   const [isDragActive, setIsDragActive] = useState(false)
   const [altText, setAltText] = useState("")
-  const [makePrimary, setMakePrimary] = useState(false)
-  const [globalError, setGlobalError] = useState<string | null>(null)
+  const [globalErrors, setGlobalErrors] = useState<string[]>([])
 
-  // Drag-to-reorder state
   const [reorderPending, startReorderTransition] = useTransition()
-  const dragIndexRef = useRef<number | null>(null)
+  const dragFromRef = useRef<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
-  // Sync images when Server Component re-renders (revalidatePath triggers)
-  // We re-initialise from prop only when the server sends new data
-  const prevInitialRef = useRef(initialImages)
-  if (initialImages !== prevInitialRef.current) {
-    prevInitialRef.current = initialImages
+  // Sync images from server re-renders
+  const prevRef = useRef(initialImages)
+  if (initialImages !== prevRef.current) {
+    prevRef.current = initialImages
     setImages(initialImages)
-    setUploading([]) // clear finished uploads on refresh
+    setUploads((prev) => prev.filter((u) => u.status !== "done"))
   }
 
-  // ── File selection & validation ────────────────────────────────────────
+  const remainingSlots = MAX_IMAGES - images.length
 
-  const processFiles = useCallback(
-    async (files: FileList | File[]) => {
-      setGlobalError(null)
-      const fileArray = Array.from(files)
+  // ── Process selected files ─────────────────────────────────────────────
 
-      // Validate each file up-front
-      const validationErrors: string[] = []
-      const validFiles: File[] = []
-      for (const f of fileArray) {
-        const err = validateFile(f)
-        if (err) validationErrors.push(err)
-        else validFiles.push(f)
+  const processFiles = useCallback(async (files: FileList | File[]) => {
+    setGlobalErrors([])
+    const all = Array.from(files)
+    const errors: string[] = []
+    const valid: File[] = []
+
+    // Slots check
+    const activeUploads = uploads.filter(
+      (u) => u.status === "queued" || u.status === "compressing" || u.status === "uploading"
+    ).length
+    const slots = MAX_IMAGES - images.length - activeUploads
+
+    if (slots <= 0) {
+      setGlobalErrors([`Maximum ${MAX_IMAGES} images allowed. Remove some images first.`])
+      return
+    }
+
+    for (const f of all.slice(0, slots)) {
+      if (!ALLOWED_TYPES.includes(f.type.toLowerCase())) {
+        errors.push(`"${f.name}" — unsupported type. Use JPG, PNG, or WebP.`)
+        continue
       }
-      if (validationErrors.length > 0) {
-        setGlobalError(validationErrors.join("\n"))
+      if (f.size > MAX_FILE_BYTES) {
+        errors.push(`"${f.name}" — file too large (max 20 MB).`)
+        continue
       }
-      if (validFiles.length === 0) return
+      valid.push(f)
+    }
 
-      // Build upload queue entries with instant previews
-      const newEntries: UploadingFile[] = validFiles.map((f) => ({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        file: f,
-        previewUrl: URL.createObjectURL(f),
-        status: "pending",
-        progress: 0,
-      }))
+    if (all.length > slots) {
+      errors.push(`Only ${slots} slot${slots === 1 ? "" : "s"} remaining. ${all.length - slots} file${all.length - slots === 1 ? "" : "s"} skipped.`)
+    }
+    if (errors.length) setGlobalErrors(errors)
+    if (!valid.length) return
 
-      setUploading((prev) => [...prev, ...newEntries])
+    // Create entries with object URL previews
+    const entries: UploadItem[] = valid.map((f) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file: f,
+      previewUrl: URL.createObjectURL(f),
+      status: "queued",
+      progress: 0,
+    }))
 
-      // Determine if this batch should produce a primary image
-      const currentImageCount = images.length
-      const currentUploadCount = uploading.filter(
-        (u) => u.status === "uploading" || u.status === "done"
-      ).length
+    setUploads((prev) => [...prev, ...entries])
 
-      // Upload sequentially to avoid overwhelming the server
-      for (let i = 0; i < newEntries.length; i++) {
-        const entry = newEntries[i]
-        const isFirst = currentImageCount === 0 && currentUploadCount === 0 && i === 0
-        const shouldBePrimary = makePrimary && i === 0 ? true : isFirst
+    // Upload each in parallel
+    await Promise.all(entries.map(async (entry, i) => {
+      const isFirstEver = images.length === 0 && uploads.length === 0 && i === 0
 
-        setUploading((prev) =>
-          prev.map((u) =>
-            u.id === entry.id ? { ...u, status: "uploading", progress: 10 } : u
-          )
+      const updateEntry = (patch: Partial<UploadItem>) =>
+        setUploads((prev) => prev.map((u) => u.id === entry.id ? { ...u, ...patch } : u))
+
+      try {
+        // Compress
+        updateEntry({ status: "compressing", progress: 5 })
+        const compressed = await compressImage(entry.file)
+
+        // Upload
+        updateEntry({ status: "uploading", progress: 15 })
+
+        const progressInterval = setInterval(() => {
+          updateEntry({
+            progress: Math.min(80, (prev => {
+              // Can't read current progress in closure, use functional update
+              return 0 // replaced below
+            })(0)),
+          })
+          setUploads((prev) => prev.map((u) =>
+            u.id === entry.id && u.progress < 80
+              ? { ...u, progress: u.progress + 12 }
+              : u
+          ))
+        }, 400)
+
+        const form = new FormData()
+        form.append("file", compressed)
+
+        const res = await fetch("/api/upload/product-image", {
+          method: "POST",
+          body: form,
+        })
+
+        clearInterval(progressInterval)
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({})) as { error?: string }
+          throw new Error(body.error ?? `Upload failed (HTTP ${res.status})`)
+        }
+
+        const { url } = await res.json() as { url: string }
+        updateEntry({ status: "uploading", progress: 90 })
+
+        const result = await saveProductImage(
+          productId,
+          url,
+          altText.trim() || null,
+          isFirstEver
         )
 
-        try {
-          const form = new FormData()
-          form.append("file", entry.file)
+        if (!result.success) throw new Error(result.error ?? "Failed to save.")
 
-          // Simulated progress steps (XHR would give real progress;
-          // fetch doesn't expose upload progress natively)
-          const progressTimer = setInterval(() => {
-            setUploading((prev) =>
-              prev.map((u) =>
-                u.id === entry.id && u.progress < 80
-                  ? { ...u, progress: u.progress + 15 }
-                  : u
-              )
-            )
-          }, 300)
-
-          const res = await fetch("/api/upload/product-image", {
-            method: "POST",
-            body: form,
-          })
-
-          clearInterval(progressTimer)
-
-          if (!res.ok) {
-            const { error } = (await res.json()) as { error: string }
-            throw new Error(error ?? `Upload failed (HTTP ${res.status})`)
-          }
-
-          const { url } = (await res.json()) as { url: string }
-
-          setUploading((prev) =>
-            prev.map((u) =>
-              u.id === entry.id ? { ...u, status: "uploading", progress: 90 } : u
-            )
-          )
-
-          // Persist to DB via Server Action
-          const result = await saveProductImage(
-            productId,
-            url,
-            altText.trim() || null,
-            shouldBePrimary
-          )
-
-          if (!result.success) throw new Error(result.error ?? "Failed to save image.")
-
-          setUploading((prev) =>
-            prev.map((u) =>
-              u.id === entry.id ? { ...u, status: "done", progress: 100 } : u
-            )
-          )
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Upload failed."
-          setUploading((prev) =>
-            prev.map((u) =>
-              u.id === entry.id ? { ...u, status: "error", error: message, progress: 0 } : u
-            )
-          )
-        }
+        updateEntry({ status: "done", progress: 100 })
+      } catch (err) {
+        updateEntry({
+          status: "error",
+          progress: 0,
+          error: err instanceof Error ? err.message : "Upload failed.",
+        })
       }
-    },
-    [productId, altText, makePrimary, images.length, uploading]
-  )
+    }))
+  }, [productId, altText, images.length, uploads])
 
-  // ── File input handler ─────────────────────────────────────────────────
+  // ── Drop zone ──────────────────────────────────────────────────────────
 
-  const handleFileInput = (e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.length) {
-      processFiles(e.target.files)
-      e.target.value = "" // reset so same file can be re-selected
-    }
-  }
-
-  // ── Drop zone handlers ─────────────────────────────────────────────────
-
-  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setIsDragActive(true)
-  }
-  const handleDragLeave = () => setIsDragActive(false)
-  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+  const onDragOver = (e: DragEvent<HTMLDivElement>) => { e.preventDefault(); setIsDragActive(true) }
+  const onDragLeave = () => setIsDragActive(false)
+  const onDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     setIsDragActive(false)
     if (e.dataTransfer.files.length) processFiles(e.dataTransfer.files)
   }
 
-  // ── Reorder handlers ───────────────────────────────────────────────────
+  // ── Reorder ────────────────────────────────────────────────────────────
 
-  const handleReorderDragStart = (index: number) => {
-    dragIndexRef.current = index
-  }
-  const handleReorderDragEnter = (index: number) => {
-    setDragOverIndex(index)
-  }
-  const handleReorderDragEnd = () => {
-    const from = dragIndexRef.current
-    const to = dragOverIndex
-    dragIndexRef.current = null
+  const onReorderDragStart = (i: number) => { dragFromRef.current = i }
+  const onReorderDragEnter = (i: number) => { setDragOverIndex(i) }
+  const onReorderDragEnd   = () => {
+    const from = dragFromRef.current
+    const to   = dragOverIndex
+    dragFromRef.current = null
     setDragOverIndex(null)
-
     if (from === null || to === null || from === to) return
 
-    const reordered = [...images]
-    const [moved] = reordered.splice(from, 1)
-    reordered.splice(to, 0, moved)
-    setImages(reordered)
-
+    const next = [...images]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    setImages(next)
     startReorderTransition(async () => {
-      await reorderImages(productId, reordered.map((img) => img.id))
+      await reorderImages(productId, next.map((img) => img.id))
     })
   }
 
-  // ── Derived state ──────────────────────────────────────────────────────
-
-  const hasActiveUploads = uploading.some((u) => u.status === "uploading")
-  const activeUploads = uploading.filter((u) => u.status !== "done")
-  const inputRef = useRef<HTMLInputElement>(null)
+  const activeUploads = uploads.filter((u) => u.status !== "done")
+  const hasActive     = uploads.some((u) => u.status === "uploading" || u.status === "compressing")
+  const atLimit       = images.length >= MAX_IMAGES
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
@@ -438,12 +475,12 @@ export function ImageManager({ productId, images: initialImages }: ImageManagerP
           <h2 className="text-base font-semibold text-slate-900">Product Images</h2>
           <p className="text-xs text-slate-400 mt-0.5">
             {images.length === 0
-              ? "No images yet. Upload the first image below."
-              : `${images.length} image${images.length === 1 ? "" : "s"} — drag to reorder.`}
+              ? "No images. Upload up to 20."
+              : `${images.length} / ${MAX_IMAGES} images — drag cards to reorder.`}
           </p>
         </div>
         {reorderPending && (
-          <span className="text-xs text-slate-400 flex items-center gap-1">
+          <span className="flex items-center gap-1 text-xs text-slate-400">
             <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -453,88 +490,95 @@ export function ImageManager({ productId, images: initialImages }: ImageManagerP
         )}
       </div>
 
-      {/* Global validation errors */}
-      {globalError && (
+      {/* Errors */}
+      {globalErrors.length > 0 && (
         <div role="alert" className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 space-y-1">
-          {globalError.split("\n").map((line, i) => (
-            <p key={i} className="text-xs text-red-700">{line}</p>
+          {globalErrors.map((e, i) => (
+            <p key={i} className="text-xs text-red-700">{e}</p>
           ))}
         </div>
       )}
 
-      {/* Existing images grid */}
-      {images.length > 0 && (
+      {/* Image grid */}
+      {(images.length > 0 || activeUploads.length > 0) && (
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
           {images.map((img, index) => (
             <ImageCard
               key={img.id}
               image={img}
+              index={index}
+              total={images.length}
               productId={productId}
-              isDragging={dragIndexRef.current === index}
+              isDragging={dragFromRef.current === index}
               isDragOver={dragOverIndex === index}
-              onDragStart={() => handleReorderDragStart(index)}
-              onDragEnter={() => handleReorderDragEnter(index)}
-              onDragEnd={handleReorderDragEnd}
+              onDragStart={() => onReorderDragStart(index)}
+              onDragEnter={() => onReorderDragEnter(index)}
+              onDragEnd={onReorderDragEnd}
             />
           ))}
-          {/* In-progress upload tiles */}
-          {activeUploads.map((item) => (
-            <UploadTile key={item.id} item={item} />
-          ))}
+          {activeUploads.map((item) => <UploadTile key={item.id} item={item} />)}
         </div>
       )}
 
       {/* Upload zone */}
-      <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        onClick={() => inputRef.current?.click()}
-        role="button"
-        tabIndex={0}
-        aria-label="Upload product images"
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") inputRef.current?.click() }}
-        className={[
-          "border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors",
-          isDragActive
-            ? "border-[var(--color-brand-500)] bg-[var(--color-brand-50)]"
-            : "border-slate-300 bg-slate-50 hover:border-[var(--color-brand-400)] hover:bg-[var(--color-brand-50)]",
-          hasActiveUploads ? "pointer-events-none opacity-60" : "",
-        ].join(" ")}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          accept={ACCEPT}
-          multiple
-          className="sr-only"
-          onChange={handleFileInput}
-          aria-hidden="true"
-        />
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className={`h-10 w-10 transition-colors ${isDragActive ? "text-[var(--color-brand-500)]" : "text-slate-300"}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}
-          aria-hidden="true"
+      {!atLimit && (
+        <div
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          onClick={() => !hasActive && inputRef.current?.click()}
+          role="button"
+          tabIndex={0}
+          aria-label={`Upload product images (${remainingSlots} slots remaining)`}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") inputRef.current?.click() }}
+          className={[
+            "border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center gap-2 cursor-pointer transition-colors",
+            isDragActive
+              ? "border-[var(--color-brand-500)] bg-[var(--color-brand-50)] scale-[1.01]"
+              : "border-slate-300 bg-slate-50 hover:border-[var(--color-brand-400)] hover:bg-[var(--color-brand-50)]",
+            hasActive ? "pointer-events-none opacity-60" : "",
+          ].join(" ")}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-        </svg>
-        <div className="text-center">
+          <input
+            ref={inputRef}
+            type="file"
+            accept={ACCEPT}
+            multiple
+            className="sr-only"
+            onChange={(e: ChangeEvent<HTMLInputElement>) => {
+              if (e.target.files?.length) { processFiles(e.target.files); e.target.value = "" }
+            }}
+            aria-hidden="true"
+          />
+          <svg
+            className={`h-9 w-9 transition-colors ${isDragActive ? "text-[var(--color-brand-500)]" : "text-slate-300"}`}
+            fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+          </svg>
           <p className="text-sm font-medium text-slate-700">
-            {isDragActive ? "Drop to upload" : "Click to upload or drag & drop"}
+            {isDragActive ? "Drop to upload" : "Click or drag & drop images"}
           </p>
-          <p className="text-xs text-slate-400 mt-0.5">JPG, PNG, WebP · max 8 MB per file · multiple files supported</p>
+          <p className="text-xs text-slate-400">
+            JPG · PNG · WebP · up to 20 MB each · images auto-compressed · {remainingSlots} slot{remainingSlots === 1 ? "" : "s"} left
+          </p>
         </div>
-      </div>
+      )}
 
-      {/* Optional upload options */}
+      {atLimit && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-xs text-amber-800">
+          Maximum {MAX_IMAGES} images reached. Delete an image to upload more.
+        </div>
+      )}
+
+      {/* Alt text option */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 px-1">
         <div className="flex-1">
-          <label htmlFor="img-alt-text" className="text-xs font-medium text-slate-600 block mb-1">
+          <label htmlFor="img-alt" className="text-xs font-medium text-slate-600 block mb-1">
             Alt text for next upload(s)
           </label>
           <input
-            id="img-alt-text"
+            id="img-alt"
             type="text"
             value={altText}
             onChange={(e) => setAltText(e.target.value)}
@@ -542,21 +586,11 @@ export function ImageManager({ productId, images: initialImages }: ImageManagerP
             className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-500)] focus:border-transparent"
           />
         </div>
-        <label className="flex items-center gap-2 cursor-pointer mt-5 sm:mt-0 shrink-0">
-          <input
-            type="checkbox"
-            checked={makePrimary}
-            onChange={(e) => setMakePrimary(e.target.checked)}
-            className="accent-[var(--color-brand-600)]"
-          />
-          <span className="text-sm text-slate-700">Set first upload as Main</span>
-        </label>
       </div>
 
-      {/* Architecture note for developers */}
       <p className="text-xs text-slate-400 border-t border-slate-100 pt-3">
-        Images are uploaded to Vercel Blob storage. Only the URL is stored in the database.
-        Requires <code className="font-mono">BLOB_READ_WRITE_TOKEN</code> in your environment.
+        Uploaded to Vercel Blob. Only the URL is stored in the database.
+        Images are auto-compressed to max 1600px before upload.
       </p>
     </div>
   )
