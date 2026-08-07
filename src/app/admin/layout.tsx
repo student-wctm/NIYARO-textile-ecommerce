@@ -29,9 +29,9 @@ export default function AdminLayout({
   children: React.ReactNode
 }) {
   return (
-    <div className="min-h-screen bg-slate-100">
+    <div className="min-h-screen bg-slate-100 dark:bg-slate-900">
       {/* Admin top bar */}
-      <header className="bg-slate-900 text-white">
+      <header className="bg-slate-900 text-white sticky top-0 z-40">
         <div className="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-14">
             <div className="flex items-center gap-6">
@@ -66,7 +66,7 @@ export default function AdminLayout({
         </div>
       </header>
 
-      <main className="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8 py-8">
+      <main className="mx-auto max-w-screen-xl px-4 sm:px-6 lg:px-8 py-8 dark:text-slate-100">
         {children}
       </main>
     </div>
