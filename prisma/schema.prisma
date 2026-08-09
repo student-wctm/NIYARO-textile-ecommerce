@@ -199,10 +199,43 @@ model Inventory {
   branchPrice      Float?   // branch-specific price override (future use, not exposed in UI yet)
   updatedAt        DateTime @updatedAt
 
+  logs             InventoryLog[]
+
   @@unique([branchId, variantId]) // one inventory record per variant per branch
   @@index([branchId])
   @@index([variantId])
   @@index([availableStock])
+}
+
+// =============================================================================
+// INVENTORY LOG
+// Full audit trail for every stock change.
+// type: ADD | REMOVE | TRANSFER_IN | TRANSFER_OUT | ADJUSTMENT | BULK_UPDATE
+// =============================================================================
+model InventoryLog {
+  id             String   @id @default(cuid())
+  inventoryId    String
+  inventory      Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  type           InventoryLogType
+  quantityBefore Int
+  quantityChange Int      // positive = added, negative = removed
+  quantityAfter  Int
+  note           String?  // e.g. "Manual adjustment by admin", transfer destination
+  createdAt      DateTime @default(now())
+
+  @@index([inventoryId])
+  @@index([createdAt])
+  @@index([type])
+}
+
+enum InventoryLogType {
+  ADD
+  REMOVE
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT
+  BULK_UPDATE
+  INITIAL
 }
 
 // =============================================================================
