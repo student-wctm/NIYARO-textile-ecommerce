@@ -17,7 +17,9 @@ function formatDate(d: Date): string {
 }
 
 function formatPrice(n: number): string {
-  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 0 }).format(n)
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency", currency: "INR", minimumFractionDigits: 0,
+  }).format(n)
 }
 
 export function LatestOrdersTable({ orders }: { orders: LatestOrder[] }) {
@@ -25,7 +27,8 @@ export function LatestOrdersTable({ orders }: { orders: LatestOrder[] }) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-slate-400 dark:text-slate-500">
         <span className="text-3xl mb-2" aria-hidden="true">📋</span>
-        <p className="text-sm">No orders yet</p>
+        <p className="text-sm font-medium mb-1">No orders yet</p>
+        <p className="text-xs">Orders will appear here once customers place reservations.</p>
       </div>
     )
   }
@@ -35,7 +38,7 @@ export function LatestOrdersTable({ orders }: { orders: LatestOrder[] }) {
       <table className="min-w-full text-sm">
         <thead>
           <tr className="border-b border-slate-100 dark:border-slate-700">
-            {["Order", "Customer", "Branch", "Amount", "Status", "Date"].map((h) => (
+            {["Order", "Customer", "Branch", "Amount", "Status", "Date", ""].map((h) => (
               <th key={h} className="px-3 py-2 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide whitespace-nowrap">
                 {h}
               </th>
@@ -45,8 +48,14 @@ export function LatestOrdersTable({ orders }: { orders: LatestOrder[] }) {
         <tbody className="divide-y divide-slate-50 dark:divide-slate-700/50">
           {orders.map((o) => (
             <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">
-              <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-brand-600)] dark:text-[var(--color-brand-400)] whitespace-nowrap">
-                {o.orderNumber}
+              {/* Order number — links to detail page */}
+              <td className="px-3 py-2.5 whitespace-nowrap">
+                <Link
+                  href={`/admin/orders/${o.id}`}
+                  className="font-mono text-xs font-semibold text-[var(--color-brand-600)] dark:text-[var(--color-brand-400)] hover:underline"
+                >
+                  {o.orderNumber}
+                </Link>
               </td>
               <td className="px-3 py-2.5 text-slate-700 dark:text-slate-300 truncate max-w-[120px]">
                 {o.customerName}
@@ -64,6 +73,18 @@ export function LatestOrdersTable({ orders }: { orders: LatestOrder[] }) {
               </td>
               <td className="px-3 py-2.5 text-xs text-slate-400 dark:text-slate-500 whitespace-nowrap">
                 {formatDate(o.createdAt)}
+              </td>
+              {/* View link */}
+              <td className="px-3 py-2.5 whitespace-nowrap">
+                <Link
+                  href={`/admin/orders/${o.id}`}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                >
+                  View
+                  <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                  </svg>
+                </Link>
               </td>
             </tr>
           ))}
