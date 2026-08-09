@@ -349,3 +349,22 @@ model OrderStatusHistory {
 
   @@index([orderId])
 }
+
+// =============================================================================
+// ADMIN SETTING
+// Key-value store for all admin-configurable global settings.
+//
+// Design: flat key-value table so new settings never require a schema change.
+// The application layer (src/lib/settings.ts) defines all valid keys,
+// their types, defaults, and validation rules.
+//
+// key   = dot-namespaced string, e.g. "store.name", "order.transfer_charge"
+// value = always stored as string; cast to correct type in application code
+// =============================================================================
+model AdminSetting {
+  key       String   @id          // e.g. "store.name"
+  value     String                // always stored as string
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+}
