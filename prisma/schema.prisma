@@ -40,6 +40,7 @@ model Branch {
   orders           Order[]
   transferCharges  BranchTransferCharge[] @relation("SourceBranch")
   receivingCharges BranchTransferCharge[] @relation("TargetBranch")
+  carts            CartSession[]
 
   @@index([isActive])
   @@index([city])
@@ -157,6 +158,7 @@ model ProductVariant {
 
   inventory   Inventory[]
   orderItems  OrderItem[]
+  cartItems   CartItem[]
 
   @@index([productId])
   @@index([sku])
@@ -261,6 +263,7 @@ model Customer {
   orders           Order[]
   sessions         CustomerSession[]
   addresses        CustomerAddress[]
+  carts            CartSession[]
 
   @@index([email])
   @@index([phone])
@@ -422,4 +425,65 @@ model CustomerAddress {
   updatedAt  DateTime @updatedAt
 
   @@index([customerId])
+}
+
+// =============================================================================
+// CART SESSION
+// One active cart per customer (or per guest token).
+//
+// Design:
+//   - Logged-in customer:  customerId is set, guestToken is null.
+//   - Guest:               customerId is null, guestToken is a random UUID
+//                          stored in a non-HttpOnly cookie (niyaro_cart).
+//   - A cart is always scoped to a single branch because inventory and
+//     pricing are branch-specific.  branchId is nullable so a cart can
+//     be created before a branch is chosen, but checkout will require it.
+//   - expiresAt lets us clean up abandoned carts with a cron/background job.
+//   - On login: guest cart is merged into the customer cart, then the guest
+//     CartSession row is deleted.
+//   - There is at most ONE active CartSession per customer at a time (enforced
+//     by unique constraint on customerId where not null, handled in code).
+// =============================================================================
+model CartSession {
+  id          String    @id @default(cuid())
+  customerId  String?                          // null for guests
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  guestToken  String?   @unique               // random UUID set in cookie for guests
+  branchId    String?                          // selected pickup branch (nullable until confirmed)
+  branch      Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  expiresAt   DateTime                         // set to 30 days from last activity
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items       CartItem[]
+
+  @@index([customerId])
+  @@index([guestToken])
+  @@index([expiresAt])
+}
+
+// =============================================================================
+// CART ITEM
+// One row per variant per cart.
+//
+// unitPrice is snapshotted at add-to-cart time for display purposes.
+// IMPORTANT: checkout MUST re-fetch the current server-side price from
+// Inventory.branchPrice ?? ProductVariant.priceOverride ?? Product.basePrice
+// and re-validate stock before creating an Order. The snapshot here is
+// informational only and must never be trusted for final billing.
+// =============================================================================
+model CartItem {
+  id            String       @id @default(cuid())
+  cartSessionId String
+  cart          CartSession  @relation(fields: [cartSessionId], references: [id], onDelete: Cascade)
+  variantId     String
+  variant       ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  quantity      Int                              // always >= 1
+  unitPrice     Float                            // snapshot only — revalidated at checkout
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([cartSessionId, variantId])           // one row per variant per cart
+  @@index([cartSessionId])
+  @@index([variantId])
 }
