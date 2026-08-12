@@ -259,6 +259,8 @@ model Customer {
   updatedAt        DateTime  @updatedAt
 
   orders           Order[]
+  sessions         CustomerSession[]
+  addresses        CustomerAddress[]
 
   @@index([email])
   @@index([phone])
@@ -367,4 +369,57 @@ model AdminSetting {
   updatedAt DateTime @updatedAt
 
   @@index([key])
+}
+
+// =============================================================================
+// CUSTOMER SESSION
+// Server-side session tokens for customer authentication.
+//
+// Flow:
+//   1. On login, generate a cryptographically random token.
+//   2. Store the token hash in this table alongside the customerId.
+//   3. Set the raw token in an HttpOnly, Secure, SameSite=Lax cookie.
+//   4. On each request, read the cookie, look up the token, verify expiry.
+//   5. On logout, delete the session row (cookie is also cleared).
+//
+// We store the SHA-256 hash of the token rather than the raw token so that
+// if the database is compromised, session tokens cannot be replayed.
+// =============================================================================
+model CustomerSession {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique   // SHA-256(rawToken) — never store raw token
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  userAgent  String?  // for display in active sessions
+  ipAddress  String?  // for audit
+
+  @@index([customerId])
+  @@index([expiresAt])
+}
+
+// =============================================================================
+// CUSTOMER ADDRESS
+// Multiple saved addresses per customer.
+// One address per customer can be marked as default.
+// =============================================================================
+model CustomerAddress {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  label      String?  // e.g. "Home", "Office" — optional nickname
+  fullName   String
+  phone      String
+  line1      String   // street / flat / building
+  line2      String?  // area / locality (optional)
+  city       String
+  state      String
+  pincode    String
+  landmark   String?
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([customerId])
 }
