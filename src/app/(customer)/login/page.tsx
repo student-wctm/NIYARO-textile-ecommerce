@@ -8,10 +8,17 @@ import { LoginForm } from "./_components/LoginForm"
 export const metadata: Metadata = { title: "Sign In" }
 export const dynamic = "force-dynamic"
 
-export default async function LoginPage() {
-  // Already logged in → go to account
+type PageProps = { searchParams: Promise<{ next?: string }> }
+
+export default async function LoginPage({ searchParams }: PageProps) {
   const session = await getSessionCustomer()
   if (session) redirect("/account")
+
+  const { next } = await searchParams
+  // Sanitise: only allow relative customer paths, never admin/staff
+  const safNext = next?.startsWith("/") && !next.startsWith("//")
+    && !next.startsWith("/admin") && !next.startsWith("/staff")
+    ? next : undefined
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center py-12 px-4">
@@ -33,7 +40,7 @@ export default async function LoginPage() {
 
         {/* Form card */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
-          <LoginForm />
+          <LoginForm next={safNext} />
         </div>
       </div>
     </div>

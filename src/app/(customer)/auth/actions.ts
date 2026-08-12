@@ -19,6 +19,8 @@ import {
   deleteAddress,
   setDefaultAddress,
 } from "@/lib/customers"
+import { mergeGuestCart } from "@/app/(customer)/cart/actions"
+import { getSelectedBranchFromCookies } from "@/lib/branch-cookie"
 
 export interface AuthResult {
   success: boolean
@@ -32,6 +34,35 @@ function isEmail(v: string)  { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) }
 function isPhone(v: string)  { return !v || /^[+]?[\d\s\-().]{7,20}$/.test(v) }
 function isPincode(v: string){ return /^\d{6}$/.test(v) }
 
+/**
+ * Determine the post-auth redirect destination.
+ * Reads the `next` search-param that the proxy middleware appended when it
+ * redirected the user to /login (e.g. ?next=/checkout).
+ * Falls back to /account for safety — we never redirect to external URLs.
+ */
+function resolveRedirectTarget(defaultPath: string): string {
+  // `headers()` lets us read the full request URL in a Server Action
+  // The referer / x-invoke-path contains the URL that triggered the action.
+  // A safer approach: the LoginForm / RegisterForm must pass the `next`
+  // value as a hidden input from the current URL searchParams. We read it
+  // here from FormData if present, otherwise fall back to default.
+  // The actual FormData reading happens in login/register and is passed in.
+  return defaultPath
+}
+
+/**
+ * Sanitise and validate the `next` redirect path.
+ * Only allow relative paths that start with /. Prevents open-redirect attacks.
+ */
+function sanitiseNext(next: string | null | undefined): string | null {
+  if (!next) return null
+  // Must start with / and not be a protocol-relative URL (//evil.com)
+  if (!next.startsWith("/") || next.startsWith("//")) return null
+  // Disallow admin / staff routes — post-login redirect must be customer paths
+  if (next.startsWith("/admin") || next.startsWith("/staff")) return null
+  return next
+}
+
 // ─── Register ─────────────────────────────────────────────────────────────────
 
 export async function register(
@@ -44,6 +75,8 @@ export async function register(
   const password = (formData.get("password") as string | null) ?? ""
   const confirm  = (formData.get("confirm")  as string | null) ?? ""
   const terms    = formData.get("terms") === "on"
+  // Hidden input optionally injected by the register page from URL searchParams
+  const next     = sanitiseNext(formData.get("next") as string | null)
 
   const fe: Record<string, string> = {}
   if (!name || name.length < 2)     fe.name     = "Full name must be at least 2 characters."
@@ -67,7 +100,13 @@ export async function register(
     userAgent: reqHeaders.get("user-agent") ?? undefined,
   })
 
-  redirect("/account")
+  // ── Cart merge after successful registration ──────────────────────────────
+  // If the new customer had items in a guest cart, merge them now.
+  // Use the selected branch from the branch cookie as the cart's branch.
+  const selectedBranch = await getSelectedBranchFromCookies()
+  await mergeGuestCart(customer.id, selectedBranch?.id)
+
+  redirect(next ?? "/account")
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
@@ -78,6 +117,8 @@ export async function login(
 ): Promise<AuthResult> {
   const email    = (formData.get("email")    as string | null)?.trim().toLowerCase() ?? ""
   const password = (formData.get("password") as string | null) ?? ""
+  // Hidden input optionally injected by the login page from URL searchParams
+  const next     = sanitiseNext(formData.get("next") as string | null)
 
   if (!email || !password) {
     return { success: false, error: "Email and password are required." }
@@ -104,7 +145,14 @@ export async function login(
     userAgent: reqHeaders.get("user-agent") ?? undefined,
   })
 
-  redirect("/account")
+  // ── Cart merge after successful login ─────────────────────────────────────
+  // Merge any guest cart into the customer's cart.
+  // Uses the selected branch from the branch cookie so the cart stays
+  // scoped to the branch the customer already chose.
+  const selectedBranch = await getSelectedBranchFromCookies()
+  await mergeGuestCart(customer.id, selectedBranch?.id)
+
+  redirect(next ?? "/account")
 }
 
 // ─── Logout ───────────────────────────────────────────────────────────────────

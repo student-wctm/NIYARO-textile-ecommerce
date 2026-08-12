@@ -41,7 +41,7 @@ function PasswordStrength({ password }: { password: string }) {
   )
 }
 
-export function RegisterForm() {
+export function RegisterForm({ next }: { next?: string }) {
   const [state, action, isPending] = useActionState(register, init)
   const [showPw, setShowPw]         = useState(false)
   const [showCf, setShowCf]         = useState(false)
@@ -50,6 +50,8 @@ export function RegisterForm() {
 
   return (
     <form action={action} noValidate className="space-y-4">
+      {/* Preserve next redirect destination */}
+      {next && <input type="hidden" name="next" value={next} />}
       {state.error && (
         <div role="alert" className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">{state.error}</div>
       )}

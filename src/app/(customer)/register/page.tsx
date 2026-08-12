@@ -8,9 +8,16 @@ import { RegisterForm } from "./_components/RegisterForm"
 export const metadata: Metadata = { title: "Create Account" }
 export const dynamic = "force-dynamic"
 
-export default async function RegisterPage() {
+type PageProps = { searchParams: Promise<{ next?: string }> }
+
+export default async function RegisterPage({ searchParams }: PageProps) {
   const session = await getSessionCustomer()
   if (session) redirect("/account")
+
+  const { next } = await searchParams
+  const safNext = next?.startsWith("/") && !next.startsWith("//")
+    && !next.startsWith("/admin") && !next.startsWith("/staff")
+    ? next : undefined
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center py-12 px-4">
@@ -30,7 +37,7 @@ export default async function RegisterPage() {
         </div>
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
-          <RegisterForm />
+          <RegisterForm next={safNext} />
         </div>
       </div>
     </div>
