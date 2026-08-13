@@ -7,6 +7,8 @@ import { formatPrice } from "@/lib/utils"
 import { Badge } from "@/components/ui/Badge"
 import { siteConfig } from "@/config/site"
 import { ProductGallery } from "@/app/(customer)/products/_components/ProductGallery"
+import { AddToCartSection } from "./_components/AddToCartSection"
+import type { SerialVariant } from "./_components/AddToCartSection"
 
 type PageProps = { params: Promise<{ slug: string }> }
 
@@ -42,9 +44,16 @@ export default async function ProductDetailPage({ params }: PageProps) {
       )
     : 0
 
-  const activeVariants = product.variants.filter((v) => v.isActive)
-  const colours = [...new Set(activeVariants.map((v) => v.color).filter(Boolean))]
-  const sizes = [...new Set(activeVariants.map((v) => v.size).filter(Boolean))]
+  // Serialise variants for the Client Component — strip Date fields
+  const serialVariants: SerialVariant[] = product.variants.map((v) => ({
+    id:            v.id,
+    sku:           v.sku,
+    color:         v.color,
+    size:          v.size,
+    length:        v.length,
+    priceOverride: v.priceOverride,
+    isActive:      v.isActive,
+  }))
 
   return (
     <div className="bg-white min-h-screen">
@@ -76,7 +85,7 @@ export default async function ProductDetailPage({ params }: PageProps) {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-16">
 
-          {/* Gallery — client component for interactivity */}
+          {/* Gallery */}
           <ProductGallery
             images={product.images}
             productName={product.name}
@@ -84,7 +93,7 @@ export default async function ProductDetailPage({ params }: PageProps) {
             discountPct={discountPct}
           />
 
-          {/* Product info — server rendered */}
+          {/* Product info */}
           <div className="flex flex-col gap-5">
 
             {/* Category + featured */}
@@ -113,6 +122,9 @@ export default async function ProductDetailPage({ params }: PageProps) {
                   {formatPrice(product.comparePrice!)}
                 </span>
               )}
+              {hasDiscount && (
+                <span className="text-sm font-semibold text-red-600">{discountPct}% off</span>
+              )}
             </div>
 
             {/* Description */}
@@ -130,109 +142,27 @@ export default async function ProductDetailPage({ params }: PageProps) {
               </p>
             )}
 
-            {/* Colours */}
-            {colours.length > 0 && (
-              <div>
-                <p className="text-sm font-medium text-gray-700 mb-2">Available Colours</p>
-                <div className="flex flex-wrap gap-2">
-                  {colours.map((colour) => (
-                    <span key={colour}
-                      className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-700">
-                      {colour}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* ── Add to Cart — client component ── */}
+            <AddToCartSection
+              variants={serialVariants}
+              basePrice={product.basePrice}
+              selectedBranchName={selectedBranch?.name ?? null}
+            />
 
-            {/* Sizes */}
-            {sizes.length > 0 && (
-              <div>
-                <p className="text-sm font-medium text-gray-700 mb-2">Available Sizes</p>
-                <div className="flex flex-wrap gap-2">
-                  {sizes.map((size) => (
-                    <span key={size}
-                      className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-700">
-                      {size}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Variants summary */}
-            {activeVariants.length > 0 && (
-              <div className="rounded-lg bg-gray-50 border border-gray-200 p-4">
-                <p className="text-sm font-medium text-gray-700 mb-2">
-                  {activeVariants.length}{" "}
-                  {activeVariants.length === 1 ? "variant" : "variants"} available
+            {/* Branch selector prompt if no branch selected */}
+            {!selectedBranch && (
+              <div className="rounded-xl border border-[var(--color-brand-100)] bg-[var(--color-brand-50)] p-4 flex items-start gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg"
+                  className="h-4 w-4 text-[var(--color-brand-600)] shrink-0 mt-0.5"
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
+                </svg>
+                <p className="text-sm text-[var(--color-brand-700)]">
+                  <strong>Tip:</strong> Select a branch from the header to see pickup details.
                 </p>
-                <div className="space-y-1 max-h-40 overflow-y-auto">
-                  {activeVariants.map((v) => {
-                    const attrs = [v.color, v.size, v.length].filter(Boolean).join(" · ")
-                    const price = v.priceOverride ?? product.basePrice
-                    return (
-                      <div key={v.id}
-                        className="flex items-center justify-between text-xs text-gray-600 gap-2">
-                        <span className="font-mono text-gray-400 shrink-0">{v.sku}</span>
-                        <span className="flex-1 truncate">{attrs}</span>
-                        <span className="font-medium text-gray-900 shrink-0">
-                          {formatPrice(price)}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
               </div>
             )}
-
-            {/* Branch + stock notice */}
-            <div className="rounded-xl border border-[var(--color-brand-100)] bg-[var(--color-brand-50)] p-4">
-              {selectedBranch ? (
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <svg xmlns="http://www.w3.org/2000/svg"
-                      className="h-4 w-4 text-[var(--color-brand-600)] shrink-0"
-                      fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                      <path fillRule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-2.079 3.218-4.402 3.218-6.853C19.5 6.161 15.976 2.25 12 2.25S4.5 6.161 4.5 11.474c0 2.451 1.274 4.774 3.218 6.853a19.58 19.58 0 002.683 2.282 16.975 16.975 0 001.144.742zM12 13.5a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z" clipRule="evenodd" />
-                    </svg>
-                    <p className="text-sm font-semibold text-[var(--color-brand-700)]">
-                      {selectedBranch.name}
-                    </p>
-                  </div>
-                  <p className="text-xs text-[var(--color-brand-600)] ml-6">
-                    Branch-wise stock availability will show here once inventory is configured.
-                  </p>
-                </div>
-              ) : (
-                <div className="flex items-start gap-2">
-                  <svg xmlns="http://www.w3.org/2000/svg"
-                    className="h-4 w-4 text-[var(--color-brand-600)] shrink-0 mt-0.5"
-                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
-                  </svg>
-                  <div>
-                    <p className="text-sm font-medium text-[var(--color-brand-700)]">
-                      Select a branch to check availability
-                    </p>
-                    <p className="text-xs text-[var(--color-brand-600)] mt-0.5">
-                      Use the branch selector in the header to choose your nearest store.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Reserve CTA — disabled until inventory is set up */}
-            <button type="button" disabled
-              title="Reservation available once branch inventory is configured."
-              className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--color-brand-600)] px-6 py-3.5 text-base font-semibold text-white opacity-50 cursor-not-allowed">
-              Reserve for Pickup
-            </button>
-            <p className="text-xs text-gray-400 text-center -mt-2">
-              Reservation available once branch inventory is set up.
-            </p>
 
             {/* Care instructions */}
             {product.careInstructions && (
@@ -243,7 +173,6 @@ export default async function ProductDetailPage({ params }: PageProps) {
                 </p>
               </div>
             )}
-
           </div>
         </div>
       </div>
