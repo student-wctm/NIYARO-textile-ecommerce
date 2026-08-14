@@ -21,7 +21,7 @@ import { type NextRequest, NextResponse } from "next/server"
 const SESSION_COOKIE = "niyaro_session"
 
 // Routes that require an authenticated customer session
-const PROTECTED_PREFIXES = ["/account"]
+const PROTECTED_PREFIXES = ["/account", "/checkout", "/order-success"]
 
 // Routes that should redirect an already-logged-in customer away
 const AUTH_ONLY_ROUTES = ["/login", "/register"]
@@ -50,9 +50,11 @@ export function proxy(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  // Only run on paths that need protection; skip static files and API routes
   matcher: [
     "/account/:path*",
+    "/checkout/:path*",
+    "/checkout",
+    "/order-success/:path*",
     "/login",
     "/register",
   ],

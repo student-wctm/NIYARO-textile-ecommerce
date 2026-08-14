@@ -53,8 +53,8 @@ export function CartSummary({ subtotal, itemCount, branchName }: CartSummaryProp
           <span>{formatPrice(subtotal)}</span>
         </div>
         <div className="flex justify-between text-gray-400 text-xs">
-          <span>Delivery charges</span>
-          <span>Calculated at checkout</span>
+          <span>Delivery</span>
+          <span>Pickup (free)</span>
         </div>
       </div>
 
@@ -75,17 +75,12 @@ export function CartSummary({ subtotal, itemCount, branchName }: CartSummaryProp
 
       {/* Actions */}
       <div className="space-y-3">
-        {/* Checkout CTA — not yet implemented, clearly disabled */}
-        <button
-          type="button"
-          disabled
-          title="Checkout coming soon"
-          className="w-full inline-flex items-center justify-center rounded-xl bg-[var(--color-brand-600)] px-6 py-3.5 text-base font-semibold text-white opacity-50 cursor-not-allowed">
-          Proceed to Checkout
-        </button>
-        <p className="text-xs text-center text-gray-400">
-          Checkout will be available in the next update.
-        </p>
+        {/* Checkout CTA */}
+        <Link
+          href="/checkout"
+          className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--color-brand-600)] px-6 py-3.5 text-base font-semibold text-white hover:bg-[var(--color-brand-700)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-600)]">
+          Proceed to Checkout →
+        </Link>
 
         <Link href="/products"
           className="w-full inline-flex items-center justify-center rounded-xl border border-gray-300 bg-white px-6 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
