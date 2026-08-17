@@ -32,7 +32,7 @@ export const siteConfig = {
   // ── Panels ──────────────────────────────────────────────────────────────
   // Labels used in the staff and admin panel headers
   staffPanelLabel: "Staff Panel",
-  adminPanelLabel: "Admin Panel",
+  adminPanelLabel: "Control Center",
 } as const
 
 export type SiteConfig = typeof siteConfig

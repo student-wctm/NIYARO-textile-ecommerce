@@ -16,7 +16,7 @@ export default async function RegisterPage({ searchParams }: PageProps) {
 
   const { next } = await searchParams
   const safNext = next?.startsWith("/") && !next.startsWith("//")
-    && !next.startsWith("/admin") && !next.startsWith("/staff")
+    && !next.startsWith("/admin") && !next.startsWith("/staff") && !next.startsWith("/control-center")
     ? next : undefined
 
   return (

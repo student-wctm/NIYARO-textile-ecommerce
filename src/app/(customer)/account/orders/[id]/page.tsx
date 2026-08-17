@@ -4,6 +4,7 @@ import { redirect, notFound } from "next/navigation"
 import { getSessionCustomer } from "@/lib/auth"
 import { getOrderById } from "@/lib/orders"
 import { formatPrice } from "@/lib/utils"
+import { CancelOrderButton } from "@/app/(customer)/account/orders/_components/CancelOrderButton"
 
 type PageProps = { params: Promise<{ id: string }> }
 
@@ -123,6 +124,23 @@ export default async function CustomerOrderDetailPage({ params }: PageProps) {
           <div className="rounded-2xl border border-gray-200 p-5">
             <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Your Notes</p>
             <p className="text-sm text-gray-700">{order.notes}</p>
+          </div>
+        )}
+
+        {/* Customer cancellation — only available for PENDING orders.
+            Server action re-verifies ownership + status independently.
+            Button is not rendered for any other status, but the action
+            itself also enforces this server-side as a second layer. */}
+        {order.status === "PENDING" && (
+          <div className="rounded-2xl border border-gray-200 p-5 space-y-3">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">Cancel Order</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                You can cancel this order while it is still pending branch confirmation.
+                Once the branch confirms your order, cancellation is no longer available here.
+              </p>
+            </div>
+            <CancelOrderButton orderId={order.id} />
           </div>
         )}
 

@@ -58,8 +58,8 @@ function sanitiseNext(next: string | null | undefined): string | null {
   if (!next) return null
   // Must start with / and not be a protocol-relative URL (//evil.com)
   if (!next.startsWith("/") || next.startsWith("//")) return null
-  // Disallow admin / staff routes — post-login redirect must be customer paths
-  if (next.startsWith("/admin") || next.startsWith("/staff")) return null
+  // Disallow admin / staff / control-center routes — post-login redirect must be customer paths only
+  if (next.startsWith("/admin") || next.startsWith("/staff") || next.startsWith("/control-center")) return null
   return next
 }
 

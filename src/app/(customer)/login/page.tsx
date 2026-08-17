@@ -15,9 +15,9 @@ export default async function LoginPage({ searchParams }: PageProps) {
   if (session) redirect("/account")
 
   const { next } = await searchParams
-  // Sanitise: only allow relative customer paths, never admin/staff
+  // Sanitise: only allow relative customer paths, never admin/staff/control-center
   const safNext = next?.startsWith("/") && !next.startsWith("//")
-    && !next.startsWith("/admin") && !next.startsWith("/staff")
+    && !next.startsWith("/admin") && !next.startsWith("/staff") && !next.startsWith("/control-center")
     ? next : undefined
 
   return (

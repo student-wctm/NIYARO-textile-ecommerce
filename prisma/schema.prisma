@@ -41,6 +41,7 @@ model Branch {
   transferCharges  BranchTransferCharge[] @relation("SourceBranch")
   receivingCharges BranchTransferCharge[] @relation("TargetBranch")
   carts            CartSession[]
+  staffMembers     StaffMember[]
 
   @@index([isActive])
   @@index([city])
@@ -486,4 +487,100 @@ model CartItem {
   @@unique([cartSessionId, variantId])           // one row per variant per cart
   @@index([cartSessionId])
   @@index([variantId])
+}
+
+// =============================================================================
+// ADMIN MEMBER + SESSION
+// Full-access admin identity, no branch restriction.
+// Session uses the same SHA-256 token-hash pattern as CustomerSession.
+// =============================================================================
+model AdminMember {
+  id           String         @id @default(cuid())
+  email        String         @unique
+  passwordHash String
+  name         String
+  isActive     Boolean        @default(true)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  sessions     AdminSession[]
+
+  @@index([email])
+}
+
+model AdminSession {
+  id         String      @id @default(cuid())
+  tokenHash  String      @unique
+  adminId    String
+  admin      AdminMember @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime    @default(now())
+
+  @@index([adminId])
+  @@index([expiresAt])
+}
+
+// =============================================================================
+// STAFF MEMBER + SESSION
+// Branch-scoped staff identity.
+// branchId is the authoritative source for branch isolation — never from browser.
+// =============================================================================
+model StaffMember {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String
+  name         String
+  branchId     String
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  sessions     StaffSession[]
+
+  @@index([email])
+  @@index([branchId])
+}
+
+model StaffSession {
+  id         String      @id @default(cuid())
+  tokenHash  String      @unique
+  staffId    String
+  staff      StaffMember @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime    @default(now())
+
+  @@index([staffId])
+  @@index([expiresAt])
+}
+
+// =============================================================================
+// ADMIN LOGIN ATTEMPT
+// DB-backed brute-force protection for the Control Center login.
+//
+// Design:
+//   - One row per (email + ip) combination per attempt window.
+//   - failCount is incremented on every failed login.
+//   - lockedUntil is set when failCount reaches MAX_ATTEMPTS.
+//   - On successful login, all rows for that email are deleted.
+//   - A background job (or TTL-based cleanup) can prune old rows.
+//     For now, rows older than 24h are ignored by application logic.
+//
+// We track both email (account lockout) and ip (source-IP lockout) so that:
+//   - An attacker using one IP against many accounts is limited per-IP.
+//   - An attacker using many IPs against one account is limited per-email.
+// ip is nullable because it may not be available in all deployment configs.
+// =============================================================================
+model AdminLoginAttempt {
+  id          String    @id @default(cuid())
+  email       String
+  ip          String?
+  failCount   Int       @default(0)
+  lockedUntil DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@index([email])
+  @@index([ip])
+  @@index([lockedUntil])
+  @@index([email, lockedUntil])
 }
