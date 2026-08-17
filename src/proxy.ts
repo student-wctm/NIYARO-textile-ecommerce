@@ -52,15 +52,18 @@ export function proxy(request: NextRequest): NextResponse {
 
   // ── Control Center routes ─────────────────────────────────────────────────
 
-  // /control-center/login is public (but redirects to dashboard if already authed)
+  // /control-center/login is always public.
+  // The login page itself calls getSessionAdmin() and redirects to /control-center
+  // if the session is genuinely valid. We must NOT redirect here based on cookie
+  // presence alone — a stale/invalid cookie would cause an infinite loop:
+  //   proxy redirects login → /control-center → layout rejects stale session
+  //   → redirects back to /control-center/login → proxy redirects again → loop.
   if (pathname === "/control-center/login" || pathname.startsWith("/control-center/login/")) {
-    if (request.cookies.has(ADMIN_COOKIE)) {
-      return NextResponse.redirect(new URL("/control-center", request.url))
-    }
     return NextResponse.next()
   }
 
-  // All other /control-center/* routes require niyaro_admin cookie (pre-flight only)
+  // All other /control-center/* routes require niyaro_admin cookie (pre-flight only).
+  // Full DB validation still happens in the layout and every Server Action.
   if (pathname === "/control-center" || pathname.startsWith("/control-center/")) {
     if (!request.cookies.has(ADMIN_COOKIE)) {
       const url = new URL("/control-center/login", request.url)
