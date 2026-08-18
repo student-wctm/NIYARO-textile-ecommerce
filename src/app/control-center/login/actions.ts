@@ -2,7 +2,8 @@
 
 import { redirect } from "next/navigation"
 import { headers } from "next/headers"
-import { verifyPassword } from "@/lib/auth"
+import { timingSafeEqual } from "crypto"
+import { hashPassword } from "@/lib/auth"
 import { createAdminSession, invalidateAdminSession } from "@/lib/adminAuth"
 import { prisma } from "@/lib/prisma"
 
@@ -19,8 +20,8 @@ function isControlCenterDisabled(): boolean {
 
 // ─── Rate limiting constants ──────────────────────────────────────────────────
 
-const MAX_ATTEMPTS    = 5   // failed attempts before lockout
-const LOCKOUT_MS      = 15 * 60_000  // 15-minute lockout
+const MAX_ATTEMPTS = 5             // failed attempts before lockout
+const LOCKOUT_MS   = 15 * 60_000  // 15-minute lockout
 
 // ─── next= sanitisation ───────────────────────────────────────────────────────
 
@@ -32,27 +33,78 @@ function sanitiseNext(next: string | null | undefined): string | null {
   return next
 }
 
-// Generic message — never reveals whether email exists or account is locked
+// Generic message — never reveals which field was wrong
 const GENERIC_ERROR = "Invalid email or password."
+
+// ─── Credential validation against env vars ───────────────────────────────────
+//
+// ADMIN_EMAIL and ADMIN_PASSWORD are the sole source of truth.
+// Both comparisons use timingSafeEqual so timing attacks cannot reveal
+// whether the email or the password was wrong.
+// ADMIN_PASSWORD is never logged, returned, or sent to the browser.
+
+function validateEnvCredentials(email: string, password: string): boolean {
+  const configEmail    = process.env.ADMIN_EMAIL?.trim().toLowerCase() ?? ""
+  const configPassword = process.env.ADMIN_PASSWORD ?? ""
+
+  if (!configEmail || !configPassword) return false  // not configured
+
+  try {
+    // Encode to equal-length buffers — timingSafeEqual requires same length
+    const enc = (s: string) => Buffer.from(s, "utf8")
+
+    const emailMatch =
+      enc(email).length === enc(configEmail).length &&
+      timingSafeEqual(enc(email), enc(configEmail))
+
+    const passMatch =
+      enc(password).length === enc(configPassword).length &&
+      timingSafeEqual(enc(password), enc(configPassword))
+
+    return emailMatch && passMatch
+  } catch {
+    return false
+  }
+}
+
+// ─── Admin session identity ───────────────────────────────────────────────────
+//
+// createAdminSession() requires an AdminMember.id from the database.
+// This helper returns the existing row for ADMIN_EMAIL, creating it if absent.
+// The AdminMember row is purely an identity record — credentials are NOT
+// validated from it. If ADMIN_EMAIL changes, the old row is abandoned and a
+// new one is created automatically.
+
+async function getOrCreateAdminMember(): Promise<{ id: string }> {
+  const configEmail = (process.env.ADMIN_EMAIL?.trim().toLowerCase()) ?? ""
+  const configName  = process.env.ADMIN_NAME?.trim() || "Admin"
+
+  const existing = await prisma.adminMember.findUnique({
+    where:  { email: configEmail },
+    select: { id: true },
+  })
+  if (existing) return existing
+
+  // Row doesn't exist yet — create it. passwordHash is set to a locked sentinel
+  // value because credentials are validated against env vars, not this hash.
+  const lockedHash = await hashPassword(`__env_auth_${configEmail}_${Date.now()}`)
+  return prisma.adminMember.create({
+    data: { email: configEmail, passwordHash: lockedHash, name: configName, isActive: true },
+    select: { id: true },
+  })
+}
 
 // ─── Rate limiting helpers ────────────────────────────────────────────────────
 
-/**
- * Checks whether this email is currently under an active lockout.
- * Also checks the IP-based record if an IP is available.
- * Called BEFORE password comparison (saves compute on hammered accounts).
- */
 async function isLockedOut(email: string, ip: string | null): Promise<boolean> {
   const now = new Date()
 
-  // Per-email lockout check
   const emailRecord = await prisma.adminLoginAttempt.findFirst({
     where: { email, ip: null, lockedUntil: { gt: now } },
     select: { id: true },
   })
   if (emailRecord) return true
 
-  // Per-IP lockout check (only if IP is known)
   if (ip) {
     const ipRecord = await prisma.adminLoginAttempt.findFirst({
       where: { ip, lockedUntil: { gt: now } },
@@ -64,20 +116,13 @@ async function isLockedOut(email: string, ip: string | null): Promise<boolean> {
   return false
 }
 
-/**
- * Records one failed attempt for this email (and optionally IP).
- * If the failure count reaches MAX_ATTEMPTS, sets lockedUntil.
- * Always uses find-then-update (no unique constraint required on email+ip).
- */
 async function recordFailedAttempt(email: string, ip: string | null): Promise<void> {
-  const now      = new Date()
+  const now       = new Date()
   const lockUntil = new Date(now.getTime() + LOCKOUT_MS)
 
-  // ── Per-email record (ip = null) ─────────────────────────────────────────
   const emailRec = await prisma.adminLoginAttempt.findFirst({
     where: { email, ip: null },
   })
-
   if (emailRec) {
     const newCount = emailRec.failCount + 1
     await prisma.adminLoginAttempt.update({
@@ -93,11 +138,8 @@ async function recordFailedAttempt(email: string, ip: string | null): Promise<vo
     })
   }
 
-  // ── Per-IP record (only if IP is known) ──────────────────────────────────
   if (ip) {
-    const ipRec = await prisma.adminLoginAttempt.findFirst({
-      where: { email, ip },
-    })
+    const ipRec = await prisma.adminLoginAttempt.findFirst({ where: { email, ip } })
     if (ipRec) {
       const newCount = ipRec.failCount + 1
       await prisma.adminLoginAttempt.update({
@@ -115,10 +157,6 @@ async function recordFailedAttempt(email: string, ip: string | null): Promise<vo
   }
 }
 
-/**
- * Clears ALL attempt records for an email after a successful login.
- * This resets the counter so a legitimate admin isn't permanently penalised.
- */
 async function clearAttempts(email: string): Promise<void> {
   await prisma.adminLoginAttempt.deleteMany({ where: { email } }).catch(() => null)
 }
@@ -150,25 +188,22 @@ export async function adminLogin(
     null
   )
 
-  // 3. Pre-check lockout before touching credentials
+  // 3. Pre-check lockout before doing any credential work
   if (await isLockedOut(email, ip)) {
     return { success: false, error: GENERIC_ERROR }
   }
 
-  // 4. Constant-time password comparison — always run even when account not found
-  const admin  = await prisma.adminMember.findUnique({ where: { email } })
-  const dummy  = "$2a$12$invalidhashinvalidhashinvalidhashXXXXXXXXXXXXXXXX"
-  const hash   = admin?.passwordHash ?? dummy
-  const valid  = await verifyPassword(password, hash)
+  // 4. Validate against ADMIN_EMAIL + ADMIN_PASSWORD env vars (timing-safe)
+  //    This is the sole source of truth — no database password involved.
+  const valid = validateEnvCredentials(email, password)
 
-  // 5. Unified failure path — record attempt, return generic message
-  //    isActive check uses same path so inactive admins can't enumerate via timing
-  if (!admin || !valid || !admin.isActive) {
+  if (!valid) {
     await recordFailedAttempt(email, ip)
     return { success: false, error: GENERIC_ERROR }
   }
 
-  // 6. Success — clear rate-limit records and issue session
+  // 5. Credentials matched — get/create the AdminMember identity row and issue session
+  const admin = await getOrCreateAdminMember()
   await clearAttempts(email)
   await createAdminSession(admin.id)
   redirect(next ?? "/control-center")
