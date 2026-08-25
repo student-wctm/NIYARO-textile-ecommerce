@@ -63,6 +63,27 @@ export async function getActiveCategoryOptions(): Promise<CategoryOption[]> {
   })
 }
 
+/**
+ * Returns id, name, slug, imageUrl for active categories.
+ * Used ONLY on the Home Page "Shop by Category" section.
+ * imageUrl is included here but NOT in getActiveCategoryOptions — keeping the
+ * Products page category filter text-only and its type unchanged.
+ */
+export type CategoryCard = {
+  id:       string
+  name:     string
+  slug:     string
+  imageUrl: string | null
+}
+
+export async function getActiveCategoriesForHome(): Promise<CategoryCard[]> {
+  return prisma.category.findMany({
+    where:   { isActive: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    select:  { id: true, name: true, slug: true, imageUrl: true },
+  })
+}
+
 export async function getCategoryById(id: string): Promise<Category | null> {
   return prisma.category.findUnique({ where: { id } })
 }

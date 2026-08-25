@@ -1,11 +1,17 @@
 import type { Metadata } from "next"
 import Link from "next/link"
+import Image from "next/image"
 import { siteConfig } from "@/config/site"
+import { getActiveCategoriesForHome } from "@/lib/products"
+import { getCategoryImageUrl } from "@/lib/image"
 
 export const metadata: Metadata = {
   title: "Home",
   description: siteConfig.description,
 }
+
+// Always fetch fresh categories from the database — do not statically cache.
+export const dynamic = "force-dynamic"
 
 // ─── Static feature cards ────────────────────────────────────────────────────
 const features = [
@@ -35,17 +41,9 @@ const features = [
   },
 ]
 
-// ─── Static category teasers ─────────────────────────────────────────────────
-const categories = [
-  { name: "Sarees", slug: "sarees", color: "bg-rose-50 text-rose-700" },
-  { name: "Dress Materials", slug: "dress-materials", color: "bg-purple-50 text-purple-700" },
-  { name: "Fabrics by the Metre", slug: "fabrics", color: "bg-amber-50 text-amber-700" },
-  { name: "Dupattas & Stoles", slug: "dupattas", color: "bg-teal-50 text-teal-700" },
-  { name: "Kurta Sets", slug: "kurta-sets", color: "bg-sky-50 text-sky-700" },
-  { name: "Kids Wear", slug: "kids-wear", color: "bg-green-50 text-green-700" },
-]
-
-export default function HomePage() {
+export default async function HomePage() {
+  // DB-driven category cards — sorted by sortOrder, active only
+  const categories = await getActiveCategoriesForHome()
   return (
     <>
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
@@ -114,26 +112,40 @@ export default function HomePage() {
           >
             Shop by Category
           </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            {categories.map((cat) => (
-              <Link
-                key={cat.slug}
-                href={`/products?category=${cat.slug}`}
-                className={[
-                  "group flex flex-col items-center justify-center rounded-xl p-5 text-center",
-                  "transition-all duration-200 hover:scale-105 hover:shadow-md",
-                  cat.color,
-                ].join(" ")}
-              >
-                <span className="text-3xl mb-2" aria-hidden="true">
-                  🧶
-                </span>
-                <span className="text-sm font-semibold leading-tight">
-                  {cat.name}
-                </span>
-              </Link>
-            ))}
-          </div>
+
+          {categories.length === 0 ? (
+            /* No categories yet — show a friendly call-to-action */
+            <div className="text-center py-8">
+              <p className="text-gray-400 text-sm">No categories available yet.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {categories.map((cat) => (
+                <Link
+                  key={cat.id}
+                  href={`/products?category=${cat.slug}`}
+                  className="group flex flex-col overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm hover:shadow-md transition-all duration-200 hover:-translate-y-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-500)]"
+                >
+                  {/* Image area — fixed 4:3 aspect ratio */}
+                  <div className="relative w-full aspect-[4/3] bg-gray-50 overflow-hidden">
+                    <Image
+                      src={getCategoryImageUrl(cat.imageUrl)}
+                      alt={cat.name}
+                      fill
+                      className="object-cover transition-transform duration-300 group-hover:scale-105"
+                      sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 16vw"
+                    />
+                  </div>
+                  {/* Name below image */}
+                  <div className="px-2 py-2.5 text-center">
+                    <span className="text-xs sm:text-sm font-semibold text-gray-800 leading-tight line-clamp-2">
+                      {cat.name}
+                    </span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 

@@ -570,3 +570,80 @@ export async function addProductImage(
 
   return saveProductImage(productId, imageUrl, altText, makePrimary)
 }
+
+// ─── Delete product ───────────────────────────────────────────────────────────
+
+/**
+ * Permanently deletes a product and all its related data:
+ *   - ProductImages (DB rows; Blob files are also deleted if HTTPS URLs)
+ *   - Inventory records (must be deleted before variants due to FK constraint)
+ *   - InventoryLog records (cascade from Inventory)
+ *   - ProductVariants (cascade from Product)
+ *   - CartItems (cascade from ProductVariant)
+ *
+ * BLOCKED if any OrderItem references a variant of this product.
+ * Order history must never be corrupted.
+ */
+export async function deleteProduct(productId: string): Promise<ActionResult> {
+  try { await requireAdmin() } catch { return { success: false, error: "Unauthorized." } }
+  if (!productId) return { success: false, error: "Product ID is required." }
+
+  try {
+    // 1. Load the product with images + variant IDs
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: {
+        id: true,
+        name: true,
+        images:    { select: { id: true, imageUrl: true } },
+        variants:  { select: { id: true } },
+      },
+    })
+    if (!product) return { success: false, error: "Product not found." }
+
+    // 2. Block deletion if any order references a variant
+    const variantIds = product.variants.map(v => v.id)
+    if (variantIds.length > 0) {
+      const orderedCount = await prisma.orderItem.count({
+        where: { variantId: { in: variantIds } },
+      })
+      if (orderedCount > 0) {
+        return {
+          success: false,
+          error:
+            `Cannot delete "${product.name}" — it has ${orderedCount} order item(s) referencing it. ` +
+            "Deactivate the product instead to hide it from customers.",
+        }
+      }
+    }
+
+    // 3. Delete Blob files for product images (fire-and-forget each)
+    for (const img of product.images) {
+      if (img.imageUrl.startsWith("https://") && process.env.BLOB_READ_WRITE_TOKEN) {
+        try {
+          await del(img.imageUrl, { token: process.env.BLOB_READ_WRITE_TOKEN })
+        } catch (blobErr) {
+          console.warn("[deleteProduct] Blob file deletion failed:", blobErr)
+        }
+      }
+    }
+
+    // 4. Delete Inventory records (no cascade from ProductVariant in schema)
+    //    InventoryLog cascades from Inventory, so this covers both.
+    if (variantIds.length > 0) {
+      await prisma.inventory.deleteMany({ where: { variantId: { in: variantIds } } })
+    }
+
+    // 5. Delete the product — cascades: ProductVariant, ProductImage, CartItem
+    await prisma.product.delete({ where: { id: productId } })
+
+  } catch (err) {
+    console.error("[deleteProduct]", err)
+    return { success: false, error: "Failed to delete product. Please try again." }
+  }
+
+  revalidatePath("/control-center/products")
+  revalidatePath("/products", "layout")
+  revalidatePath("/")
+  return { success: true }
+}

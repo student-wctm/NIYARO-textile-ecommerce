@@ -261,10 +261,11 @@ model Customer {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  orders           Order[]
-  sessions         CustomerSession[]
-  addresses        CustomerAddress[]
-  carts            CartSession[]
+  orders             Order[]
+  sessions           CustomerSession[]
+  addresses          CustomerAddress[]
+  carts              CartSession[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([email])
   @@index([phone])
@@ -583,4 +584,39 @@ model AdminLoginAttempt {
   @@index([ip])
   @@index([lockedUntil])
   @@index([email, lockedUntil])
+}
+
+// =============================================================================
+// PASSWORD RESET TOKEN
+// Backs the customer forgot-password / OTP flow.
+//
+// Design:
+//   - A 6-digit code is generated server-side using cryptographically secure
+//     randomness. Only a SHA-256 hash of the code is stored here — never the
+//     plaintext code.
+//   - One active token per customer at a time. Requesting a new code
+//     invalidates all previous tokens for that customer (via deleteMany).
+//   - Expires 10 minutes after creation.
+//   - Verification attempts are tracked. After 5 failed attempts the token is
+//     deleted, forcing the customer to request a new code.
+//   - A requestedAt timestamp supports the 60-second resend cooldown enforced
+//     in the Server Action layer (not in DB constraints).
+//   - verified: set to true after a correct code is submitted. The reset-
+//     password action checks this before allowing a password change.
+//   - After a successful password reset all tokens for that customer are
+//     deleted and all CustomerSession rows are purged (forcing re-login on
+//     all devices).
+// =============================================================================
+model PasswordResetToken {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  codeHash   String                 // SHA-256(6-digit code) — never plaintext
+  expiresAt  DateTime               // now + 10 minutes
+  attempts   Int      @default(0)   // failed verification attempts
+  verified   Boolean  @default(false) // true once correct code submitted
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+  @@index([expiresAt])
 }

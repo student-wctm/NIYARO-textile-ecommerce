@@ -34,6 +34,7 @@ function validateCategoryFields(data: FormData): {
   values: {
     name: string
     description: string | null
+    imageUrl: string | null
     sortOrder: number
     isActive: boolean
   }
@@ -43,6 +44,7 @@ function validateCategoryFields(data: FormData): {
 
   const name = (data.get("name") as string | null)?.trim() ?? ""
   const description = (data.get("description") as string | null)?.trim() || null
+  const imageUrl = (data.get("imageUrl") as string | null)?.trim() || null
   const sortOrderRaw = (data.get("sortOrder") as string | null)?.trim() ?? "0"
   const isActive = data.get("isActive") === "true"
 
@@ -50,13 +52,18 @@ function validateCategoryFields(data: FormData): {
   else if (name.length < 2) fieldErrors.name = "Name must be at least 2 characters."
   else if (name.length > 80) fieldErrors.name = "Name must be 80 characters or fewer."
 
+  // Validate imageUrl if provided — must be an https URL or a /public path
+  if (imageUrl && !/^https?:\/\//i.test(imageUrl) && !imageUrl.startsWith("/")) {
+    fieldErrors.imageUrl = "Invalid image URL."
+  }
+
   const sortOrder = parseInt(sortOrderRaw, 10)
   if (isNaN(sortOrder) || sortOrder < 0) {
     fieldErrors.sortOrder = "Sort order must be a non-negative number."
   }
 
   return {
-    values: { name, description, sortOrder: isNaN(sortOrder) ? 0 : sortOrder, isActive },
+    values: { name, description, imageUrl, sortOrder: isNaN(sortOrder) ? 0 : sortOrder, isActive },
     fieldErrors,
   }
 }
@@ -75,11 +82,12 @@ export async function createCategory(
     const slug = await generateUniqueCategorySlug(values.name)
     await prisma.category.create({
       data: {
-        name: values.name,
+        name:        values.name,
         slug,
         description: values.description,
-        sortOrder: values.sortOrder,
-        isActive: values.isActive,
+        imageUrl:    values.imageUrl,
+        sortOrder:   values.sortOrder,
+        isActive:    values.isActive,
       },
     })
   } catch (err) {
@@ -90,6 +98,7 @@ export async function createCategory(
   revalidatePath("/control-center/categories")
   revalidatePath("/control-center/products")
   revalidatePath("/products", "layout")
+  revalidatePath("/")
   redirect("/control-center/categories")
 }
 
@@ -118,11 +127,12 @@ export async function updateCategory(
     await prisma.category.update({
       where: { id },
       data: {
-        name: values.name,
+        name:        values.name,
         slug,
         description: values.description,
-        sortOrder: values.sortOrder,
-        isActive: values.isActive,
+        imageUrl:    values.imageUrl,
+        sortOrder:   values.sortOrder,
+        isActive:    values.isActive,
       },
     })
   } catch (err) {
@@ -133,6 +143,7 @@ export async function updateCategory(
   revalidatePath("/control-center/categories")
   revalidatePath("/control-center/products")
   revalidatePath("/products", "layout")
+  revalidatePath("/")
   redirect("/control-center/categories")
 }
 
