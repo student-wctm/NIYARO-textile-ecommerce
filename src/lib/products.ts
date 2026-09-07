@@ -26,6 +26,14 @@ export type ProductWithRelations = Product & {
   category: Category
   images: ProductImage[]
   variants: ProductVariant[]
+  similarFrom: Array<{
+    id: string
+    sortOrder: number
+    similarProduct: Pick<Product, "id" | "name" | "slug" | "basePrice" | "comparePrice"> & {
+      images: Pick<ProductImage, "id" | "imageUrl" | "altText" | "isPrimary">[]
+    }
+  }>
+  reviews: Array<{ rating: number; isApproved: boolean }>
 }
 
 // ─── Category helpers ─────────────────────────────────────────────────────────
@@ -185,6 +193,22 @@ export async function getProductById(
       category: true,
       images: { orderBy: [{ isPrimary: "desc" }, { sortOrder: "asc" }] },
       variants: { orderBy: [{ createdAt: "asc" }] },
+      similarFrom: {
+        orderBy: { sortOrder: "asc" },
+        include: {
+          similarProduct: {
+            select: {
+              id: true, name: true, slug: true, basePrice: true, comparePrice: true,
+              images: {
+                where: { isPrimary: true },
+                select: { id: true, imageUrl: true, altText: true, isPrimary: true },
+                take: 1,
+              },
+            },
+          },
+        },
+      },
+      reviews: { select: { rating: true, isApproved: true } },
     },
   }) as Promise<ProductWithRelations | null>
 }
@@ -202,6 +226,22 @@ export async function getProductBySlug(
         where: { isActive: true },
         orderBy: [{ createdAt: "asc" }],
       },
+      similarFrom: {
+        orderBy: { sortOrder: "asc" },
+        include: {
+          similarProduct: {
+            select: {
+              id: true, name: true, slug: true, basePrice: true, comparePrice: true,
+              images: {
+                where: { isPrimary: true },
+                select: { id: true, imageUrl: true, altText: true, isPrimary: true },
+                take: 1,
+              },
+            },
+          },
+        },
+      },
+      reviews: { select: { rating: true, isApproved: true } },
     },
   }) as Promise<ProductWithRelations | null>
 }
@@ -248,4 +288,66 @@ export async function isSkuTaken(
   if (!existing) return false
   if (excludeId && existing.id === excludeId) return false
   return true
+}
+
+// ─── Rating summary helper ─────────────────────────────────────────────────────
+
+export type RatingSummary = {
+  averageRating: number  // 0 if no reviews
+  totalRatings:  number
+  totalReviews:  number  // reviews with a body
+}
+
+/** Compute rating summary from approved reviews already loaded on the product. */
+export function computeRatingSummary(
+  reviews: Array<{ rating: number; isApproved: boolean }>
+): RatingSummary {
+  const approved = reviews.filter((r) => r.isApproved)
+  if (approved.length === 0) return { averageRating: 0, totalRatings: 0, totalReviews: 0 }
+  const sum = approved.reduce((acc, r) => acc + r.rating, 0)
+  return {
+    averageRating: Math.round((sum / approved.length) * 10) / 10,
+    totalRatings:  approved.length,
+    totalReviews:  approved.length,  // all approved ratings count as reviews
+  }
+}
+
+// ─── Similar products search ───────────────────────────────────────────────────
+
+/** Search active products by name (for admin similar-products picker). Excludes currentProductId. */
+export async function searchProductsForSimilar(
+  query: string,
+  excludeId: string
+): Promise<Array<{ id: string; name: string; slug: string; basePrice: number }>> {
+  if (!query.trim()) return []
+  return prisma.product.findMany({
+    where: {
+      isActive: true,
+      id: { not: excludeId },
+      name: { contains: query.trim(), mode: "insensitive" },
+    },
+    select: { id: true, name: true, slug: true, basePrice: true },
+    take: 10,
+    orderBy: { name: "asc" },
+  })
+}
+
+/** Set the complete list of similar products for a product (replace all). */
+export async function setSimilarProducts(
+  productId: string,
+  similarIds: string[]
+): Promise<void> {
+  await prisma.$transaction([
+    prisma.productSimilar.deleteMany({ where: { productId } }),
+    ...(similarIds.length > 0
+      ? [prisma.productSimilar.createMany({
+          data: similarIds.map((similarProductId, i) => ({
+            productId,
+            similarProductId,
+            sortOrder: i,
+          })),
+          skipDuplicates: true,
+        })]
+      : []),
+  ])
 }

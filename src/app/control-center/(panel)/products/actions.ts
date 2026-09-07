@@ -13,6 +13,7 @@ import {
   generateUniqueProductSlug,
   getProductById,
   isSkuTaken,
+  setSimilarProducts,
 } from "@/lib/products"
 import { getSessionAdmin } from "@/lib/adminAuth"
 
@@ -58,6 +59,9 @@ function validateProductFields(data: FormData): {
     basePrice: number
     comparePrice: number | null
     fabric: string | null
+    color: string | null
+    fit: string | null
+    additionalDetails: string | null
     careInstructions: string | null
     isActive: boolean
     isFeatured: boolean
@@ -72,6 +76,9 @@ function validateProductFields(data: FormData): {
   const basePriceRaw = str(data, "basePrice")
   const comparePriceRaw = str(data, "comparePrice")
   const fabric = optStr(data, "fabric")
+  const color = optStr(data, "color")
+  const fit = optStr(data, "fit")
+  const additionalDetails = optStr(data, "additionalDetails")
   const careInstructions = optStr(data, "careInstructions")
   const isActive = data.get("isActive") === "true"
   const isFeatured = data.get("isFeatured") === "true"
@@ -96,7 +103,7 @@ function validateProductFields(data: FormData): {
       name, description, categoryId,
       basePrice: isNaN(basePrice) ? 0 : basePrice,
       comparePrice,
-      fabric, careInstructions, isActive, isFeatured,
+      fabric, color, fit, additionalDetails, careInstructions, isActive, isFeatured,
     },
     fieldErrors,
   }
@@ -124,6 +131,9 @@ export async function createProduct(
         basePrice: values.basePrice,
         comparePrice: values.comparePrice,
         fabric: values.fabric,
+        color: values.color,
+        fit: values.fit,
+        additionalDetails: values.additionalDetails,
         careInstructions: values.careInstructions,
         isActive: values.isActive,
         isFeatured: values.isFeatured,
@@ -164,6 +174,9 @@ export async function createProductAndReturn(
         basePrice: values.basePrice,
         comparePrice: values.comparePrice,
         fabric: values.fabric,
+        color: values.color,
+        fit: values.fit,
+        additionalDetails: values.additionalDetails,
         careInstructions: values.careInstructions,
         isActive: values.isActive,
         isFeatured: values.isFeatured,
@@ -210,6 +223,9 @@ export async function updateProduct(
         basePrice: values.basePrice,
         comparePrice: values.comparePrice,
         fabric: values.fabric,
+        color: values.color,
+        fit: values.fit,
+        additionalDetails: values.additionalDetails,
         careInstructions: values.careInstructions,
         isActive: values.isActive,
         isFeatured: values.isFeatured,
@@ -646,4 +662,46 @@ export async function deleteProduct(productId: string): Promise<ActionResult> {
   revalidatePath("/products", "layout")
   revalidatePath("/")
   return { success: true }
+}
+
+// ─── Similar products ─────────────────────────────────────────────────────────
+
+/**
+ * Replace the full set of similar products for a product.
+ * similarIds is an ordered array of product IDs to relate.
+ * Any IDs not referring to real products are ignored by the DB unique constraint.
+ */
+export async function updateSimilarProducts(
+  productId: string,
+  similarIds: string[]
+): Promise<ActionResult> {
+  try { await requireAdmin() } catch { return { success: false, error: "Unauthorized." } }
+  if (!productId) return { success: false, error: "Product ID is required." }
+
+  // Deduplicate and remove self-reference
+  const ids = [...new Set(similarIds.filter((id) => id !== productId))]
+
+  try {
+    await setSimilarProducts(productId, ids)
+  } catch (err) {
+    console.error("[updateSimilarProducts]", err)
+    return { success: false, error: "Failed to update similar products." }
+  }
+
+  revalidatePath(`/control-center/products/${productId}/edit`)
+  revalidatePath("/products", "layout")
+  return { success: true }
+}
+
+/**
+ * Server-side product search for the similar-products picker.
+ * Returns lightweight data only — no DB IDs exposed unnecessarily.
+ */
+export async function searchProducts(
+  query: string,
+  excludeId: string
+): Promise<{ id: string; name: string; basePrice: number }[]> {
+  try { await requireAdmin() } catch { return [] }
+  const { searchProductsForSimilar } = await import("@/lib/products")
+  return searchProductsForSimilar(query, excludeId)
 }

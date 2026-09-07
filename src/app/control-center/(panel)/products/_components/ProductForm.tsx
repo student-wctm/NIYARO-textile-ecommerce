@@ -1,18 +1,36 @@
 "use client"
 
-import { useActionState, useEffect, useRef } from "react"
+import { useActionState, useEffect, useRef, useState, useTransition } from "react"
 import Link from "next/link"
+import Image from "next/image"
+import { formatPrice } from "@/lib/utils"
+import { getProductImageUrl } from "@/lib/image"
 import type { Product } from "@/lib/products"
 import type { CategoryOption } from "@/lib/products"
 import type { ActionResult } from "@/app/control-center/(panel)/products/actions"
+import {
+  updateSimilarProducts,
+  searchProducts,
+} from "@/app/control-center/(panel)/products/actions"
+
+interface SimilarItem {
+  id: string
+  sortOrder: number
+  similarProduct: {
+    id: string
+    name: string
+    slug: string
+    basePrice: number
+    comparePrice: number | null
+    images: { id: string; imageUrl: string; altText: string | null; isPrimary: boolean }[]
+  }
+}
 
 interface ProductFormProps {
-  product?: Product
+  product?: Product & { similarFrom?: SimilarItem[] }
   categories: CategoryOption[]
   action: (prev: ActionResult, data: FormData) => Promise<ActionResult>
   showSuccessBanner?: boolean
-  // Called with the full state after a successful submission.
-  // Used by NewProductClient to detect creation and render ImageManager.
   onSuccess?: (state: ActionResult) => void
 }
 
@@ -29,9 +47,7 @@ const selectCls =
   "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 " +
   "focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-500)] focus:border-transparent disabled:opacity-50"
 
-function Field({
-  label, name, children, error, required = false, hint,
-}: {
+function Field({ label, name, children, error, required = false, hint }: {
   label: string; name: string; children: React.ReactNode
   error?: string; required?: boolean; hint?: string
 }) {
@@ -48,6 +64,135 @@ function Field({
   )
 }
 
+// ─── Similar Products Picker ──────────────────────────────────────────────────
+
+function SimilarProductsPicker({
+  productId,
+  initialSimilar,
+}: {
+  productId: string
+  initialSimilar: SimilarItem[]
+}) {
+  const [selected, setSelected] = useState<
+    Array<{ id: string; name: string; basePrice: number }>
+  >(
+    initialSimilar.map((s) => ({
+      id: s.similarProduct.id,
+      name: s.similarProduct.name,
+      basePrice: s.similarProduct.basePrice,
+    }))
+  )
+  const [query, setQuery] = useState("")
+  const [results, setResults] = useState<Array<{ id: string; name: string; basePrice: number }>>([])
+  const [searching, startSearch] = useTransition()
+  const [saving, startSave] = useTransition()
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
+
+  function handleSearch(q: string) {
+    setQuery(q)
+    if (!q.trim()) { setResults([]); return }
+    startSearch(async () => {
+      const r = await searchProducts(q, productId)
+      setResults(r)
+    })
+  }
+
+  function addItem(item: { id: string; name: string; basePrice: number }) {
+    if (selected.find((s) => s.id === item.id)) return
+    setSelected((prev) => [...prev, item])
+    setQuery(""); setResults([])
+  }
+
+  function removeItem(id: string) {
+    setSelected((prev) => prev.filter((s) => s.id !== id))
+  }
+
+  function handleSave() {
+    setSaveMsg(null)
+    startSave(async () => {
+      const result = await updateSimilarProducts(productId, selected.map((s) => s.id))
+      setSaveMsg(result.success ? "Saved!" : (result.error ?? "Failed"))
+      setTimeout(() => setSaveMsg(null), 3000)
+    })
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Search input */}
+      <div className="relative">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => handleSearch(e.target.value)}
+          placeholder="Search products to add as similar…"
+          className={inputCls}
+        />
+        {searching && (
+          <span className="absolute right-3 top-2.5 text-xs text-slate-400">Searching…</span>
+        )}
+        {results.length > 0 && (
+          <div className="absolute z-20 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+            {results.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => addItem(r)}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left"
+              >
+                <span className="truncate">{r.name}</span>
+                <span className="ml-3 text-xs text-slate-400 shrink-0">{formatPrice(r.basePrice)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Selected list */}
+      {selected.length > 0 ? (
+        <ul className="space-y-2">
+          {selected.map((s) => (
+            <li key={s.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <div>
+                <p className="text-sm font-medium text-slate-800">{s.name}</p>
+                <p className="text-xs text-slate-400">{formatPrice(s.basePrice)}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeItem(s.id)}
+                className="text-xs text-red-500 hover:text-red-700 transition-colors ml-4 shrink-0"
+                aria-label={`Remove ${s.name}`}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-slate-400">No similar products selected.</p>
+      )}
+
+      {/* Save button */}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving}
+          className="inline-flex items-center gap-2 rounded-lg bg-[var(--color-brand-600)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--color-brand-700)] transition-colors disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save Similar Products"}
+        </button>
+        {saveMsg && (
+          <span className={`text-xs font-medium ${saveMsg === "Saved!" ? "text-green-600" : "text-red-600"}`}>
+            {saveMsg}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Main form ────────────────────────────────────────────────────────────────
+
 export function ProductForm({ product, categories, action, showSuccessBanner, onSuccess }: ProductFormProps) {
   const [state, formAction, isPending] = useActionState(action, initialState)
   const formRef = useRef<HTMLFormElement>(null)
@@ -58,9 +203,7 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
     if (state.fieldErrors || state.error) {
       formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
     }
-    if (state.success && onSuccess) {
-      onSuccess(state)
-    }
+    if (state.success && onSuccess) onSuccess(state)
   }, [state]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -78,10 +221,10 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
         </div>
       )}
 
-      {/* ── Core details ── */}
+      {/* ── 1. Basic Product Information ── */}
       <fieldset className="space-y-5">
         <legend className="text-sm font-semibold text-slate-500 uppercase tracking-wide pb-2 border-b border-slate-100 w-full">
-          Product Details
+          1. Basic Information
         </legend>
 
         <Field label="Product Name" name="name" required error={fe.name}>
@@ -112,12 +255,11 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
         </Field>
       </fieldset>
 
-      {/* ── Pricing ── */}
+      {/* ── 2. Pricing ── */}
       <fieldset className="space-y-5">
         <legend className="text-sm font-semibold text-slate-500 uppercase tracking-wide pb-2 border-b border-slate-100 w-full">
-          Pricing
+          2. Pricing
         </legend>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           <Field label="Selling Price (₹)" name="basePrice" required error={fe.basePrice}
             hint="Default price across all branches.">
@@ -127,10 +269,8 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
               placeholder="1299"
               className={fe.basePrice ? errorInputCls : inputCls} />
           </Field>
-
-          <Field label="MRP / Compare Price (₹)" name="comparePrice"
-            error={fe.comparePrice}
-            hint="Optional — shown as strikethrough to indicate discount.">
+          <Field label="MRP / Compare Price (₹)" name="comparePrice" error={fe.comparePrice}
+            hint="Optional — shown as strikethrough.">
             <input id="comparePrice" name="comparePrice" type="number"
               min={0} step="0.01"
               defaultValue={product?.comparePrice ?? ""}
@@ -140,19 +280,29 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
         </div>
       </fieldset>
 
-      {/* ── Textile attributes ── */}
+      {/* ── 3. Product Highlights ── */}
       <fieldset className="space-y-5">
         <legend className="text-sm font-semibold text-slate-500 uppercase tracking-wide pb-2 border-b border-slate-100 w-full">
-          Textile Attributes{" "}
+          3. Product Highlights{" "}
           <span className="normal-case font-normal text-slate-400">(optional)</span>
         </legend>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <Field label="Fabric / Material" name="fabric"
-            hint="e.g. Silk, Cotton, Polyester Blend">
+          <Field label="Fabric / Material" name="fabric" hint="e.g. Pure Silk, Cotton Blend">
             <input id="fabric" name="fabric" type="text"
               defaultValue={product?.fabric ?? ""}
-              placeholder="e.g. Pure Silk"
+              placeholder="e.g. Cotton Blend"
+              className={inputCls} />
+          </Field>
+          <Field label="Color" name="color" hint="Primary colour of the product">
+            <input id="color" name="color" type="text"
+              defaultValue={(product as Record<string, unknown>)?.color as string ?? ""}
+              placeholder="e.g. Pink, Navy Blue"
+              className={inputCls} />
+          </Field>
+          <Field label="Fit / Shape" name="fit" hint="e.g. Regular Fit, Loose, Slim Fit">
+            <input id="fit" name="fit" type="text"
+              defaultValue={(product as Record<string, unknown>)?.fit as string ?? ""}
+              placeholder="e.g. Loose Fit"
               className={inputCls} />
           </Field>
         </div>
@@ -164,14 +314,21 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
             placeholder="Care instructions…"
             className={`${inputCls} resize-none`} />
         </Field>
+
+        <Field label="Additional Details" name="additionalDetails"
+          hint="Shown in expandable 'Additional Details' section on product page.">
+          <textarea id="additionalDetails" name="additionalDetails" rows={3}
+            defaultValue={(product as Record<string, unknown>)?.additionalDetails as string ?? ""}
+            placeholder="Extra product details, care notes, material specifics…"
+            className={`${inputCls} resize-y`} />
+        </Field>
       </fieldset>
 
-      {/* ── Visibility ── */}
+      {/* ── 4. Visibility ── */}
       <fieldset className="space-y-4">
         <legend className="text-sm font-semibold text-slate-500 uppercase tracking-wide pb-2 border-b border-slate-100 w-full">
-          Visibility
+          4. Visibility
         </legend>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           <div className="flex flex-col gap-2">
             <span className="text-sm font-medium text-slate-700">Status</span>
@@ -185,9 +342,7 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
                 </label>
               ))}
             </div>
-            <p className="text-xs text-slate-400">Inactive products are hidden from customers.</p>
           </div>
-
           <div className="flex flex-col gap-2">
             <span className="text-sm font-medium text-slate-700">Featured</span>
             <div className="flex gap-4">
@@ -200,12 +355,11 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
                 </label>
               ))}
             </div>
-            <p className="text-xs text-slate-400">Featured products appear first in the catalogue.</p>
           </div>
         </div>
       </fieldset>
 
-      {/* ── Actions ── */}
+      {/* ── 5. Save button ── */}
       <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-3 pt-2 border-t border-slate-100">
         <Link href="/control-center/products"
           className="w-full sm:w-auto inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
@@ -222,8 +376,22 @@ export function ProductForm({ product, categories, action, showSuccessBanner, on
           {isPending ? "Saving…" : isEdit ? "Save Changes" : "Create Product & Add Variants →"}
         </button>
       </div>
+
+      {/* ── 6. Similar Products (edit mode only — requires productId) ── */}
+      {isEdit && product?.id && (
+        <div className="pt-4 border-t border-slate-100 space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700">5. Similar Products</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Search and select products to show in the &ldquo;Similar Products&rdquo; section on the customer page.
+            </p>
+          </div>
+          <SimilarProductsPicker
+            productId={product.id}
+            initialSimilar={product.similarFrom ?? []}
+          />
+        </div>
+      )}
     </form>
   )
 }
-
-

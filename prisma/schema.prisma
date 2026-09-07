@@ -103,6 +103,9 @@ model Product {
   basePrice    Float     // default selling price across all branches
   comparePrice Float?    // original/MRP for showing discount
   fabric       String?   // e.g. "Cotton", "Silk", "Polyester"
+  color        String?   // highlight: primary colour of the product
+  fit          String?   // highlight: e.g. "Regular Fit", "Slim Fit", "Loose"
+  additionalDetails String? // extra product details (shown in expandable section)
   careInstructions String?
   isActive     Boolean   @default(true)
   isFeatured   Boolean   @default(false)
@@ -111,8 +114,11 @@ model Product {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  variants  ProductVariant[]
-  images    ProductImage[]
+  variants       ProductVariant[]
+  images         ProductImage[]
+  similarFrom    ProductSimilar[] @relation("SimilarFrom")
+  similarTo      ProductSimilar[] @relation("SimilarTo")
+  reviews        ProductReview[]
 
   @@index([categoryId])
   @@index([isActive])
@@ -266,6 +272,7 @@ model Customer {
   addresses          CustomerAddress[]
   carts              CartSession[]
   passwordResetTokens PasswordResetToken[]
+  reviews            ProductReview[]
 
   @@index([email])
   @@index([phone])
@@ -619,4 +626,47 @@ model PasswordResetToken {
 
   @@index([customerId])
   @@index([expiresAt])
+}
+
+// =============================================================================
+// PRODUCT SIMILAR
+// Admin-curated "Similar Products" relationships.
+// Directional: productId → similarProductId, displayed on the product detail page.
+// sortOrder controls display order.
+// =============================================================================
+model ProductSimilar {
+  id              String  @id @default(cuid())
+  productId       String
+  product         Product @relation("SimilarFrom", fields: [productId], references: [id], onDelete: Cascade)
+  similarProductId String
+  similarProduct  Product @relation("SimilarTo", fields: [similarProductId], references: [id], onDelete: Cascade)
+  sortOrder       Int     @default(0)
+
+  @@unique([productId, similarProductId])
+  @@index([productId])
+  @@index([similarProductId])
+}
+
+// =============================================================================
+// PRODUCT REVIEW
+// Customer reviews — architecture in place for future use.
+// Currently supports admin-created placeholder data until full customer flow is built.
+// rating: 1–5 integer.
+// isApproved: admin can moderate before display.
+// =============================================================================
+model ProductReview {
+  id         String    @id @default(cuid())
+  productId  String
+  product    Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  customerId String?                          // null for anonymous/imported reviews
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  rating     Int                              // 1–5
+  title      String?
+  body       String?
+  isApproved Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+
+  @@index([productId])
+  @@index([customerId])
+  @@index([isApproved])
 }
