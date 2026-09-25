@@ -38,6 +38,8 @@ import { getSessionCustomer } from "@/lib/auth"
 import { getCustomerCart, deleteCart } from "@/lib/cart"
 import { prisma } from "@/lib/prisma"
 import { getSetting } from "@/lib/settings"
+import { notifyAdminNewOrder } from "@/lib/notifications"
+import type { OrderNotificationPayload } from "@/lib/notifications"
 
 export interface CheckoutResult {
   success:      boolean
@@ -388,6 +390,79 @@ export async function placeOrder(
     return { success: false, error: msg }
   }
 
-  // ── 8. Redirect to confirmation ───────────────────────────────────────────
+  // ── 8. Admin notification (fire-and-forget) ───────────────────────────────
+  // The order is already committed. Notification failures must NEVER cancel
+  // the order or return an error to the customer.
+  try {
+    // Re-load the order with all relations needed for the notification.
+    // This is a single SELECT after the transaction — lightweight and safe.
+    const orderForNotify = await prisma.order.findUnique({
+      where:   { id: orderId },
+      select: {
+        id:            true,
+        orderNumber:   true,
+        customerName:  true,
+        customerPhone: true,
+        customerEmail: true,
+        subtotal:      true,
+        total:         true,
+        notes:         true,
+        createdAt:     true,
+        branch:        { select: { name: true } },
+        items: {
+          select: {
+            quantity:   true,
+            unitPrice:  true,
+            totalPrice: true,
+            variant: {
+              select: {
+                sku:    true,
+                size:   true,
+                color:  true,
+                length: true,
+                product: { select: { name: true } },
+              },
+            },
+          },
+        },
+      },
+    })
+
+    if (orderForNotify) {
+      const payload: OrderNotificationPayload = {
+        orderId:       orderForNotify.id,
+        orderNumber:   orderForNotify.orderNumber,
+        customerName:  orderForNotify.customerName,
+        customerPhone: orderForNotify.customerPhone,
+        customerEmail: orderForNotify.customerEmail,
+        branchName:    orderForNotify.branch.name,
+        subtotal:      orderForNotify.subtotal,
+        total:         orderForNotify.total,
+        notes:         orderForNotify.notes,
+        createdAt:     orderForNotify.createdAt,
+        items: orderForNotify.items.map((item) => ({
+          productName: item.variant.product.name,
+          sku:         item.variant.sku,
+          size:        item.variant.size,
+          color:       item.variant.color,
+          length:      item.variant.length,
+          quantity:    item.quantity,
+          unitPrice:   item.unitPrice,
+          totalPrice:  item.totalPrice,
+        })),
+      }
+
+      // Do not await — notification is best-effort.
+      // .catch() ensures unhandled-rejection warnings don't appear.
+      notifyAdminNewOrder(payload).catch((err) =>
+        console.error("[placeOrder] Notification failed (non-fatal):", err)
+      )
+    }
+  } catch (notifyErr) {
+    // Notification setup failed — log but continue to redirect
+    console.error("[placeOrder] Notification setup failed (non-fatal):", notifyErr)
+  }
+
+  // ── 9. Redirect to confirmation ───────────────────────────────────────────
   redirect(`/order-success/${orderId}`)
 }
